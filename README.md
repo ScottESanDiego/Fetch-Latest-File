@@ -2,14 +2,16 @@
 
 This custom component for Home Assistant allows you to fetch the latest files (such as camera screenshots and video events) of a certain minimum size from a specified directory. It was specifically designed for use with Reolink cameras and their integrations but can be easily adapted for a variety of other use cases.
 
+Note that the original project is (or soon will be!) archived by the author, and this form includes updates to make it work reliably with the latest Home Assistant versions.
+
 ## Installation
 
 1. Use HACS custom repository:
-    [![Open your Home Assistant instance and show the add repository dialog of the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=bexem&repository=Fetch-Latest-File&category=integration) <details><summary>Manual Instructions</summary>
+    [![Open your Home Assistant instance and show the add repository dialog of the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=ScottESanDiego&repository=Fetch-Latest-File&category=integration) <details><summary>Manual Instructions</summary>
         1. Go to any of the sections (integrations, frontend, automation).
         2. Click on the 3 dots in the top right corner.
         3. Select "Custom repositories"
-        4. Add this repository [URL](https://github.com/bexem/Fetch-Latest-File) to the repository text field.
+        4. Add this repository [URL](https://github.com/ScottESanDiego/Fetch-Latest-File) to the repository text field.
         5. Select the integration category.
         6. Click the "ADD" button. </details>
 2. Go to Configuration > Integrations > Add Integration > **Fetch Latest File**
@@ -55,7 +57,7 @@ image: /path/to/your/directory/cam1_20230613102757.jpg
 
 The main use case for this component is in a home security setup with Reolink cameras. Whenever an event is triggered, Home Assistant fetches the relevant files that meet the minimum size requirement and can post them to a specific Discord channel. This provides a streamlined way to access important security footage as soon as it is needed.
 
-### [See My example](https://github.com/bexem/Fetch-Latest-File/wiki/Example)
+### [See My example](https://github.com/ScottESanDiego/Fetch-Latest-File/wiki/Example)
 
 ## Further Uses
 
@@ -84,4 +86,4 @@ List of supported file extensions categories:
 
 ## Support
 
-Feel free to [open an issue](https://github.com/bexem/Fetch-Lastest-file-HA-Custom-Component/issues) for any problems or feature requests.
+Feel free to [open an issue](https://github.com/ScottESanDiego/Fetch-Lastest-file-HA-Custom-Component/issues) for any problems or feature requests.
