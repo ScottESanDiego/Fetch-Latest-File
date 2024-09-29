@@ -84,4 +84,4 @@ List of supported file extensions categories:
 
 ## Support
 
-Feel free to [open an issue](https://github.com/ScottESanDiego/Fetch-Lastest-File/issues) for any problems or feature requests.
+Feel free to [open an issue](https://github.com/ScottESanDiego/Fetch-Latest-File/issues) for any problems or feature requests.
