@@ -1,4 +1,4 @@
-# Home Assistant "Fetch Latest file" Custom Component
+# Home Assistant "Fetch Latest File" Custom Component
 
 This custom component for Home Assistant allows you to retrieve ("fetch") the most recently modified files ("latest files"), such as camera screenshots and video events, of a certain minimum size from a specified directory. It was specifically designed for use with Reolink cameras and their integrations but can be easily adapted for a variety of other use cases.
 
@@ -27,7 +27,7 @@ fetch_latest_file:
 
 ## Usage
 
-Once you've set up the custom component in your Home Assistant instance, you can call it using the service `latest.fetch` with the following parameters:
+Once you've set up the custom component in your Home Assistant instance, you can call it using the service `eatest.fetch` with the following parameters:
 
 - `directory`: The directory to search for files. *(Required)*
 - `filename`: The start of the file name to search for. *(Required)*
