@@ -49,7 +49,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         directory = normalized_data.get('directory')
         file_name_prefix = normalized_data.get('filename')
         extensions = normalized_data.get('extension')
-        min_size_str = normalized_data.get('min_size', "0B")
+        min_size_str = normalized_data.get('minsize', "0B")
 
         # --- Parameter Validation ---
         # Validate directory
