@@ -7,7 +7,10 @@ from homeassistant.core import HomeAssistant, ServiceCall, callback # Import cal
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.helpers.typing import ConfigType
 
-from .const import DOMAIN # Assuming const.py exists with DOMAIN = "flf"
+from .const import DOMAIN
+from .const import IMAGE_EXTS
+from .const import VIDEO_EXTS
+from .const import AUDIO_EXTS
 
 _LOGGER = logging.getLogger(__name__)
 

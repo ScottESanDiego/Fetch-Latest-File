@@ -2,8 +2,8 @@ import voluptuous as vol
 from homeassistant import config_entries
 from homeassistant.const import CONF_UNIQUE_ID
 
-# Import the updated domain
 from .const import DOMAIN
+from .const import INTREGRATION_TITLE
 
 # Use the updated domain in the class definition
 class ConfigFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
