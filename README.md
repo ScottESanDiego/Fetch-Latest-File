@@ -2,7 +2,7 @@
 
 This custom component for Home Assistant allows you to retrieve ("fetch") the most recently modified files ("latest files"), such as camera screenshots and video events, of a certain minimum size from a specified directory. It was specifically designed for use with Reolink cameras and their integrations but can be easily adapted for a variety of other use cases.
 
-Note that the original project is (or soon will be!) archived by the author, and this form includes updates to make it work reliably with the latest Home Assistant versions.  As of version 2.0.0, this component is now a "Sensor".
+Note that the original project is archived by the author. This form includes updates to make it work reliably with the latest Home Assistant versions.  As of version 2.0.0, this component is now a "Sensor".
 
 ## Installation
 
@@ -38,7 +38,7 @@ data:
 
 This will search for the latest `.jpg` and `.mp4` files that start with "Reolink-" in the specified directory and are at least 1 megabyte in size. The result is then stored in a entity state attribute which you can access in your automations, scripts, or templates.
 
-Entity: **fetch_latest_file.file** 's attributes:
+Entity: **sensor.fetch_latest_file** 's attributes:
 ```
 Video: /path/to/your/directory/cam1_20230613102757.mp4
 Image: /path/to/your/directory/cam1_20230613102757.jpg
