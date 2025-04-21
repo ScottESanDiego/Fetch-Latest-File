@@ -8,14 +8,8 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.helpers.typing import ConfigType
 
 from .const import DOMAIN # Assuming const.py exists with DOMAIN = "flf"
-# Make sensor entity accessible for type hinting if possible, otherwise use 'Any'
-# from .sensor import FetchLatestFileSensor # This might cause circular import issues, use carefully or avoid
 
 _LOGGER = logging.getLogger(__name__)
-
-# Define common image and video extensions (could be in const.py)
-IMG_EXTS = {'jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'svg', 'heic', 'raw'}
-VID_EXTS = {'mp4', 'mkv', 'webm', 'flv', 'vob', 'ogv', 'avi', 'mov', 'wmv', 'mpg', 'mpeg', 'm4v'}
 
 # Define platforms to set up
 PLATFORMS = ["sensor"]
@@ -124,8 +118,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                             if extension_match and size_match:
                                 # Determine file type
                                 file_type = "generic"
-                                if file_ext in IMG_EXTS: file_type = "image"
-                                elif file_ext in VID_EXTS: file_type = "video"
+                                if file_ext in IMAGE_EXTS: file_type = "image"
+                                elif file_ext in VIDEO_EXTS: file_type = "video"
+                                elif file_ext in AUDIO_EXTS: file_type = "audio"
                                 # Add file details to list
                                 found_files.append((mod_time, file_path, file_ext, file_type))
                                 _LOGGER.debug(f"Found matching file: {file_path} (Type: {file_type})")
@@ -153,7 +148,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         # Get the path of the absolute latest file
         overall_latest_file_path = found_files[0][1]
 
-        # Find the latest file for each type (Image, Video, Generic)
+        # Find the latest file for each type (Image, Video, Audio, Generic)
         latest_by_type = {}
         processed_types = set()
         for mod_time, file_path, file_ext, file_type in found_files:
@@ -161,17 +156,19 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 latest_by_type[file_type] = file_path
                 processed_types.add(file_type)
             # Optimization: stop if all needed types are found
-            if len(processed_types) >= 3: # Assuming only image, video, generic
+            if len(processed_types) >= 4: # Assuming only image, video, audio, generic
                 break
 
         # --- Prepare State and Attributes for Sensor ---
         state_attributes = {}
-        # Use the attribute keys defined previously ('Overall', 'Image', 'Video', 'Generic')
+        # Use the attribute keys defined previously ('Overall', 'Image', 'Video', 'Audio', 'Generic')
         state_attributes['Overall'] = overall_latest_file_path
         if 'image' in latest_by_type:
             state_attributes['Image'] = latest_by_type['image']
         if 'video' in latest_by_type:
             state_attributes['Video'] = latest_by_type['video']
+        if 'audio' in latest_by_type:
+            state_attributes['Audio'] = latest_by_type['audio']
         if 'generic' in latest_by_type:
             state_attributes['Generic'] = latest_by_type['generic']
 
@@ -228,7 +225,4 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         _LOGGER.error("Failed to unload one or more FetchLatestFile platforms.")
 
     return unload_ok
-
-# Note: Legacy setup function (def setup(...)) should not be present
-# if using config flow and async_setup_entry.
 

@@ -12,11 +12,6 @@ from .const import DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
 
-# Define common image and video extensions (can be moved to const.py if preferred)
-IMG_EXTS = {'jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'svg', 'heic', 'raw'}
-VID_EXTS = {'mp4', 'mkv', 'webm', 'flv', 'vob', 'ogv', 'avi', 'mov', 'wmv', 'mpg', 'mpeg', 'm4v'}
-
-
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: ConfigEntry,

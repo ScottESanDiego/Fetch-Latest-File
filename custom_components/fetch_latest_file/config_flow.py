@@ -5,9 +5,6 @@ from homeassistant.const import CONF_UNIQUE_ID
 # Import the updated domain
 from .const import DOMAIN
 
-# Define the user-facing name
-INTEGRATION_TITLE = "Fetch Latest File"
-
 # Use the updated domain in the class definition
 class ConfigFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
     """Handle a config flow for Fetch Latest File."""
