@@ -1,5 +1,5 @@
 {
-    "name": "Fetch Latest file",
+    "name": "Fetch Latest File",
     "hide_default_branch": true,
     "homeassistant": "2025.4.0",
     "render_readme": true,
