@@ -2,7 +2,7 @@
 
 This custom component for Home Assistant allows you to retrieve ("fetch") the most recently modified files ("latest files"), such as camera screenshots and video events, of a certain minimum size from a specified directory. It was specifically designed for use with Reolink cameras and their integrations but can be easily adapted for a variety of other use cases.
 
-Note that the original project is archived by the author. This form includes updates to make it work reliably with the latest Home Assistant versions.  As of version 2.0.0, this component is now a "Sensor".
+Note that the original project is archived by the author. This form includes updates to make it work reliably with the latest Home Assistant versions.  As of version 3.0.0, this component is now a "Sensor" with improved async handling and modern Home Assistant best practices.
 
 ## Installation
 
@@ -20,29 +20,44 @@ Note that the original project is archived by the author. This form includes upd
 
 Once you've set up the custom component in your Home Assistant instance, you can call it using the service `fetch_latest_file.fetch` with the following parameters:
 
-- `Directory`: The directory to search for files. *(Required)*
-- `FileName`: The start of the file name to search for. *(Required)*
-- `Extension`: The file extension(s) to search for. *(Optional)*
-- `MinSize`: The minimum size of the files to fetch. Specify the size as a string with a unit: B for bytes, K for kilobytes, M for megabytes, G for gigabytes. For example, "1M" for 1 megabyte. *(Optional)*
+- `directory`: The directory to search for files. *(Required)*
+- `filename`: The start of the file name to search for. *(Required)*
+- `extension`: The file extension(s) to search for. *(Optional)*
+- `min_size`: The minimum size of the files to fetch. Specify the size as a string with a unit: B for bytes, K for kilobytes, M for megabytes, G for gigabytes. For example, "1M" for 1 megabyte. *(Optional)*
 
 Here's an example of how to call this service:
 
 ```yaml
 service: fetch_latest_file.fetch
 data:
-  Directory: "/ftproot"
-  FileName: "Reolink-"
-  Extension: ["jpg", "mp4"]
-  MinSize: "1M"
+  directory: "/ftproot"
+  filename: "Reolink-"
+  extension: ["jpg", "mp4"]
+  min_size: "1M"
 ```
 
 This will search for the latest `.jpg` and `.mp4` files that start with "Reolink-" in the specified directory and are at least 1 megabyte in size. The result is then stored in a entity state attribute which you can access in your automations, scripts, or templates.
 
-Entity: **sensor.fetch_latest_file** 's attributes:
+### Sensor State and Attributes
+
+The integration creates an entity **sensor.fetch_latest_file** that updates when the service is called.
+
+- **State**: Timestamp of when the fetch was last performed (e.g., `2025-10-17T14:09:39-0700`)
+- **Attributes**: Paths to the latest files found, organized by type:
+  - `Overall`: The absolute latest file across all types
+  - `Image`: The latest image file (jpg, jpeg, png, gif, bmp, webp, svg, heic, raw)
+  - `Video`: The latest video file (mp4, mkv, webm, flv, vob, ogv, avi, mov, wmv, mpg, mpeg, m4v)
+  - `Audio`: The latest audio file (mp3, flac, wav, aac, ogg, wma, m4a, opus)
+  - `Generic`: The latest file that doesn't match the above categories
+
+**Example attributes:**
+```yaml
+Overall: /ftproot/Reolink-OutdoorGarageNorth_20231015_143022.mp4
+Video: /ftproot/Reolink-OutdoorGarageNorth_20231015_143022.mp4
+Image: /ftproot/Reolink-OutdoorGarageNorth_20231015_143020.jpg
 ```
-Video: /path/to/your/directory/cam1_20230613102757.mp4
-Image: /path/to/your/directory/cam1_20230613102757.jpg
-```
+
+**Note**: Only attribute types with matching files will be present. If no files are found, the state will be "No matching files" with no file attributes.
 
 ## Use Case
 
