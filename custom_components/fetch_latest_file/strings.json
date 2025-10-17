@@ -30,7 +30,7 @@
           "description": "The file extension(s) to search for. Can be a single extension or a list of extensions. Do not include the dot.",
           "example": "[\"jpg\", \"mp4\"]"
         },
-        "minsize": {
+        "min_size": {
           "name": "Minimum file size",
           "description": "The minimum size of the file to fetch. Specify as a string with a unit: B (bytes), K (kilobytes), M (megabytes), or G (gigabytes).",
           "example": "1M"

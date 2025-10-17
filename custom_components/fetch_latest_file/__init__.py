@@ -23,7 +23,7 @@ SERVICE_FETCH_SCHEMA = vol.Schema({
     vol.Required("directory"): cv.string,
     vol.Required("filename"): cv.string,
     vol.Optional("extension"): vol.Any(cv.string, [cv.string]),
-    vol.Optional("minsize", default="0B"): cv.string,
+    vol.Optional("min_size", default="0B"): cv.string,
 })
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -51,7 +51,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         directory: str = call.data["directory"]
         file_name_prefix: str = call.data["filename"]
         extensions = call.data.get("extension")
-        min_size_str: str = call.data.get("minsize", "0B")
+        min_size_str: str = call.data.get("min_size", "0B")
 
         # Normalize extensions
         if extensions is None:
@@ -77,7 +77,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             if min_size < 0:
                 raise ValueError("Minimum size cannot be negative.")
         except ValueError as e:
-            _LOGGER.error("Invalid 'minsize' input '%s': %s", min_size_str, e)
+            _LOGGER.error("Invalid 'min_size' input '%s': %s", min_size_str, e)
             sensor_entity.update_data("Error: Invalid Size", {"error_details": f"Input: {min_size_str}, Error: {e}"})
             return
 

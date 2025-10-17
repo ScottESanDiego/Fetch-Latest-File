@@ -2,22 +2,22 @@ fetch:
   name: Fetch Latest File
   description: Fetches the most recent file that starts with the given filename in the specified directory. Optionally, filter by file extension and/or minimum file size.
   fields:
-    FileName:
-      name: File Name
-      description: The beginning of the name of the file to fetch.
-      example: "test"
-      required: true
-    Directory:
+    directory:
       name: Directory
       description: The directory to fetch the file from.
       example: "/config"
       required: true
-    Extension:
+    filename:
+      name: File Name
+      description: The beginning of the name of the file to fetch.
+      example: "test"
+      required: true
+    extension:
       name: Extension
       description: The extension of the file to fetch. If multiple extensions are given, the service will fetch the latest file for each extension.
       example: ["jpg", "mp4"]
       required: false
-    MinSize:
+    min_size:
       name: Minimum File Size
       description: The minimum size of the file to fetch. Specify the size as a string with a unit, B for bytes, K for kilobytes, M for megabytes, G for gigabytes. For example, "1M" for 1 megabyte.
       example: "1M"
