@@ -1,7 +1,7 @@
 {
   "domain": "fetch_latest_file",
   "name": "Fetch Latest File",
-  "version": "2.1.0",
+  "version": "3.0.0",
   "integration_type": "service",
   "documentation": "https://github.com/ScottESanDiego/Fetch-Latest-File",
   "issue_tracker": "https://github.com/ScottESanDiego/Fetch-Latest-File/issues",
@@ -11,4 +11,3 @@
   "author": "ScottESanDiego",
   "codeowners": ["@ScottESanDiego"]
 }
-
