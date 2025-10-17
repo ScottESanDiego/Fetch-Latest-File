@@ -1,0 +1,41 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Set up Fetch Latest File",
+        "description": "This integration allows you to fetch the most recently modified files from a directory based on filename patterns, extensions, and minimum file size."
+      }
+    },
+    "abort": {
+      "single_instance_allowed": "Only a single instance of this integration is allowed."
+    }
+  },
+  "services": {
+    "fetch": {
+      "name": "Fetch latest file",
+      "description": "Fetches the most recent file that starts with the given filename in the specified directory. Optionally, filter by file extension and/or minimum file size.",
+      "fields": {
+        "directory": {
+          "name": "Directory",
+          "description": "The directory to search for files. The search is recursive and includes subdirectories.",
+          "example": "/config"
+        },
+        "filename": {
+          "name": "File name prefix",
+          "description": "The beginning of the name of the file to fetch. Case-insensitive.",
+          "example": "Reolink-"
+        },
+        "extension": {
+          "name": "Extension",
+          "description": "The file extension(s) to search for. Can be a single extension or a list of extensions. Do not include the dot.",
+          "example": "[\"jpg\", \"mp4\"]"
+        },
+        "minsize": {
+          "name": "Minimum file size",
+          "description": "The minimum size of the file to fetch. Specify as a string with a unit: B (bytes), K (kilobytes), M (megabytes), or G (gigabytes).",
+          "example": "1M"
+        }
+      }
+    }
+  }
+}
