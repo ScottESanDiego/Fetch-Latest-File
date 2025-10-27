@@ -10,6 +10,18 @@
       "single_instance_allowed": "Only a single instance of this integration is allowed."
     }
   },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Fetch Latest File Options",
+        "description": "Configure cleanup behavior for target_id results",
+        "data": {
+          "max_target_ids": "Maximum number of target_ids to keep (1-100)",
+          "target_expiry_hours": "Remove target_ids older than (hours, 1-168)"
+        }
+      }
+    }
+  },
   "services": {
     "fetch": {
       "name": "Fetch latest file",
@@ -34,6 +46,11 @@
           "name": "Minimum file size",
           "description": "The minimum size of the file to fetch. Specify as a string with a unit: B (bytes), K (kilobytes), M (megabytes), or G (gigabytes).",
           "example": "1M"
+        },
+        "target_id": {
+          "name": "Target ID",
+          "description": "A unique identifier for this fetch operation. Service calls with different target_id values can run in parallel, while calls with the same target_id will execute sequentially to prevent conflicts. If not specified, uses 'default'.",
+          "example": "camera1"
         }
       }
     }

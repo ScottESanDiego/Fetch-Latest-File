@@ -24,6 +24,7 @@ Once you've set up the custom component in your Home Assistant instance, you can
 - `filename`: The start of the file name to search for. *(Required)*
 - `extension`: The file extension(s) to search for. *(Optional)*
 - `min_size`: The minimum size of the files to fetch. Specify the size as a string with a unit: B for bytes, K for kilobytes, M for megabytes, G for gigabytes. For example, "1M" for 1 megabyte. *(Optional)*
+- `target_id`: A unique identifier for this fetch operation. Allows parallel execution and namespaced results. If not specified, uses "default". *(Optional)*
 
 Here's an example of how to call this service:
 
@@ -42,22 +43,79 @@ This will search for the latest `.jpg` and `.mp4` files that start with "Reolink
 
 The integration creates an entity **sensor.fetch_latest_file** that updates when the service is called.
 
-- **State**: Timestamp of when the fetch was last performed (e.g., `2025-10-17T14:09:39-0700`)
-- **Attributes**: Paths to the latest files found, organized by type:
+- **State**: Timestamp of the most recent fetch operation (e.g., `2025-10-26T14:30:45-0700`)
+- **Attributes**: Results organized by `target_id`, with each target containing:
   - `Overall`: The absolute latest file across all types
   - `Image`: The latest image file (jpg, jpeg, png, gif, bmp, webp, svg, heic, raw)
   - `Video`: The latest video file (mp4, mkv, webm, flv, vob, ogv, avi, mov, wmv, mpg, mpeg, m4v)
   - `Audio`: The latest audio file (mp3, flac, wav, aac, ogg, wma, m4a, opus)
   - `Generic`: The latest file that doesn't match the above categories
+  - `timestamp`: When this specific target was last updated
 
 **Example attributes:**
 ```yaml
-Overall: /ftproot/Reolink-OutdoorGarageNorth_20231015_143022.mp4
-Video: /ftproot/Reolink-OutdoorGarageNorth_20231015_143022.mp4
-Image: /ftproot/Reolink-OutdoorGarageNorth_20231015_143020.jpg
+default:
+  Overall: /ftproot/Reolink-OutdoorGarageNorth_20231015_143022.mp4
+  Video: /ftproot/Reolink-OutdoorGarageNorth_20231015_143022.mp4
+  Image: /ftproot/Reolink-OutdoorGarageNorth_20231015_143020.jpg
+  timestamp: "2025-10-26T14:30:45-0700"
 ```
 
-**Note**: Only attribute types with matching files will be present. If no files are found, the state will be "No matching files" with no file attributes.
+**Accessing attributes in templates:**
+```yaml
+# Access default target results (backward compatible with version 3.0 and earlier - works without target_id)
+{{ state_attr('sensor.fetch_latest_file', 'Image') }}
+{{ state_attr('sensor.fetch_latest_file', 'Video') }}
+{{ state_attr('sensor.fetch_latest_file', 'Overall') }}
+
+# Access specific target results (when using target_id parameter)
+{{ state_attr('sensor.fetch_latest_file', 'camera1')['Overall'] }}
+{{ state_attr('sensor.fetch_latest_file', 'camera2')['Image'] }}
+{{ state_attr('sensor.fetch_latest_file', 'default')['Video'] }}
+```
+
+**Note**: Only attribute types with matching files will be present. If no files are found, the target will contain a `status: "No matching files"` entry.
+
+## Parallel Execution
+
+The `target_id` parameter enables safe parallel execution of the service. Service calls with different `target_id` values can run simultaneously, while calls with the same `target_id` execute sequentially to prevent conflicts.
+
+**Example: Multiple cameras in parallel**
+```yaml
+# These can run simultaneously
+- service: fetch_latest_file.fetch
+  data:
+    directory: "/ftproot/camera1"
+    filename: "cam1-"
+    extension: ["jpg", "mp4"]
+    min_size: "1M"
+    target_id: "camera1"
+
+- service: fetch_latest_file.fetch
+  data:
+    directory: "/ftproot/camera2"
+    filename: "cam2-"
+    extension: ["jpg", "mp4"]
+    min_size: "1M"
+    target_id: "camera2"
+```
+
+## Configuration
+
+The integration provides GUI-configurable options to control cleanup behavior:
+
+1. Go to **Settings** → **Devices & Services**
+2. Find **Fetch Latest File** integration
+3. Click **Configure**
+4. Adjust settings:
+   - **Maximum number of target_ids to keep**: 1-100 (default: 20)
+     - Limits how many different `target_id` results are stored
+     - Oldest targets are removed when limit is exceeded
+   - **Remove target_ids older than (hours)**: 1-168 hours (default: 24)
+     - Automatically removes stale results
+     - Prevents unbounded memory growth
+
+These settings help manage the sensor's attribute storage and prevent it from growing indefinitely.
 
 ## Use Case
 

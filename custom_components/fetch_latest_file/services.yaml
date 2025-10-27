@@ -22,4 +22,9 @@ fetch:
       description: The minimum size of the file to fetch. Specify the size as a string with a unit, B for bytes, K for kilobytes, M for megabytes, G for gigabytes. For example, "1M" for 1 megabyte.
       example: "1M"
       required: false
+    target_id:
+      name: Target ID
+      description: A unique identifier for this fetch operation. Service calls with different target_id values can run in parallel, while calls with the same target_id will execute sequentially to prevent conflicts. If not specified, uses 'default'.
+      example: "camera1"
+      required: false
 
