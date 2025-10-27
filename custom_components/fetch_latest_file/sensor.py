@@ -155,8 +155,9 @@ class FetchLatestFileSensor(SensorEntity):
             del self._attr_extra_state_attributes[target_id]
         
         # If still over limit, remove oldest targets
+        # Recalculate remaining target_ids after removing expired ones
         remaining_target_ids = {
-            k for k, v in remaining_target_ids.items()
+            k: v for k, v in self._attr_extra_state_attributes.items()
             if isinstance(v, dict) and "timestamp" in v
         }
         

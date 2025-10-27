@@ -98,23 +98,90 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             # Run blocking I/O operations in executor
             def search_files() -> list[tuple[float, str, str, str]]:
                 """Search for matching files (blocking operation)."""
-                # Validate directory
-                if not os.path.isdir(directory):
+                # Security: Resolve to absolute path to prevent directory traversal
+                try:
+                    real_directory = os.path.realpath(directory)
+                except OSError as e:
+                    raise ValueError(f"Cannot resolve directory path: {directory}, Error: {e}")
+                
+                # Verify the resolved path still exists and is a directory
+                if not os.path.isdir(real_directory):
                     raise ValueError(f"Invalid or inaccessible directory: {directory}")
+                
+                # Security: Resolve to absolute path to prevent directory traversal
+                try:
+                    real_directory = os.path.realpath(directory)
+                except OSError as e:
+                    raise ValueError(f"Cannot resolve directory path: {directory}, Error: {e}")
+                
+                # Verify the resolved path still exists and is a directory
+                if not os.path.isdir(real_directory):
+                    raise ValueError(f"Resolved path is not a directory: {real_directory}")
+                
+                # Check read permissions
+                if not os.access(real_directory, os.R_OK):
+                    raise ValueError(f"No read permission for directory: {real_directory}")
 
-                _LOGGER.debug("Searching in '%s' for files starting with '%s'", directory, file_name_prefix)
+                # Security: Sanitize filename prefix to prevent path traversal patterns
+                if file_name_prefix and ('/' in file_name_prefix or '\\' in file_name_prefix or '..' in file_name_prefix):
+                    raise ValueError(f"Invalid filename prefix contains path separators or '..' : {file_name_prefix}")
+                
+                _LOGGER.debug("Searching in '%s' for files starting with '%s'", real_directory, file_name_prefix)
                 if cleaned_extensions:
                     _LOGGER.debug("Filtering by extensions: %s", cleaned_extensions)
                 if min_size > 0:
                     _LOGGER.debug("Filtering by minimum size: %s (%d bytes)", min_size_str, min_size)
 
                 found_files = []
-                for dirpath, _, filenames in os.walk(directory):
+                max_depth = 10  # Limit recursion depth to prevent DoS
+                file_count = 0
+                max_files_to_check = 10000  # Limit number of files checked to prevent DoS
+                
+                for dirpath, dirnames, filenames in os.walk(real_directory, followlinks=False):  # Don't follow symlinks
+                    # Calculate current depth
+                    depth = dirpath[len(real_directory):].count(os.sep)
+                    if depth > max_depth:
+                        _LOGGER.debug("Skipping directory (too deep): %s", dirpath)
+                        dirnames.clear()  # Don't recurse deeper
+                        continue
+                    
+                    # Security: Ensure we're still within the allowed directory
+                    try:
+                        real_dirpath = os.path.realpath(dirpath)
+                        if not real_dirpath.startswith(real_directory):
+                            _LOGGER.warning("Skipping directory outside base path: %s", dirpath)
+                            continue
+                    except OSError:
+                        _LOGGER.warning("Could not resolve path: %s", dirpath)
+                        continue
+                    
                     for filename in filenames:
+                        file_count += 1
+                        if file_count > max_files_to_check:
+                            _LOGGER.warning("Reached maximum file check limit (%d), stopping search", max_files_to_check)
+                            return found_files
+                        
                         if filename.lower().startswith(file_name_prefix.lower()):
                             file_path = os.path.join(dirpath, filename)
+                            
+                            # Security: Validate file path is still within base directory
                             try:
-                                stats = os.stat(file_path)
+                                real_file_path = os.path.realpath(file_path)
+                                if not real_file_path.startswith(real_directory):
+                                    _LOGGER.warning("Skipping file outside base directory: %s", file_path)
+                                    continue
+                            except OSError:
+                                _LOGGER.warning("Could not resolve file path: %s", file_path)
+                                continue
+                            
+                            try:
+                                stats = os.stat(file_path, follow_symlinks=False)  # Don't follow symlinks
+                                
+                                # Skip if it's a symlink (extra safety)
+                                if os.path.islink(file_path):
+                                    _LOGGER.debug("Skipping symlink: %s", file_path)
+                                    continue
+                                
                                 mod_time = stats.st_mtime
                                 file_size = stats.st_size
                                 file_ext = os.path.splitext(filename)[1].lower().strip('.')
