@@ -18,6 +18,8 @@ Requires Home Assistant 2026.5.0 or newer.
         6. Click the "ADD" button. </details>
 2. Go to Configuration > Integrations > Add Integration > **Fetch Latest File**
 
+
+
 ## Usage
 
 Once you've set up the custom component in your Home Assistant instance, you can call it using the service `fetch_latest_file.fetch` with the following parameters:
@@ -136,6 +138,50 @@ This component can also be used in many other scenarios, such as:
 - Retrieving the latest log files of a certain size for debugging purposes
 
 Files are reported by their actual extension. For example, matching `.jpg`, `.png`, and `.mp4` files will produce `jpg`, `png`, and `mp4` attributes. Files without an extension are reported under `no_extension`.
+
+## Upgrading from 3.x.x to 4.y.y
+
+Version 4 changes the sensor attributes in ways that can break automations, templates, scripts, and dashboard cards written for version 3.
+
+Before upgrading:
+
+1. Make sure your Home Assistant installation is version 2026.5.0 or newer.
+2. Find any references to `sensor.fetch_latest_file` attributes in automations, scripts, templates, and dashboards.
+3. Update those references to use the new `target_id` structure and extension-based attribute names.
+
+The most important change is that version 4 reports files by the actual matched extension instead of broad media type names.
+
+Version 3 examples:
+
+```yaml
+{{ state_attr('sensor.fetch_latest_file', 'Image') }}
+{{ state_attr('sensor.fetch_latest_file', 'Video') }}
+{{ state_attr('sensor.fetch_latest_file', 'Overall') }}
+```
+
+Version 4 equivalents:
+
+```yaml
+{{ state_attr('sensor.fetch_latest_file', 'default')['jpg'] }}
+{{ state_attr('sensor.fetch_latest_file', 'default')['mp4'] }}
+{{ state_attr('sensor.fetch_latest_file', 'default')['Overall'] }}
+```
+
+If you use `target_id`, replace `default` with that target ID:
+
+```yaml
+{{ state_attr('sensor.fetch_latest_file', 'front_door')['jpg'] }}
+```
+
+Other upgrade notes:
+
+- Attribute names are lowercase extensions without the dot, such as `jpg`, `png`, `mp4`, or `txt`.
+- Files without an extension are reported as `no_extension`.
+- If a file extension conflicts with a reserved result key, such as `timestamp`, it is reported with an `ext_` prefix.
+- `target_id` values must be 1-64 characters and can only contain letters, numbers, underscores, and hyphens.
+- Results are no longer flattened at the top level of the sensor attributes. They are always stored under a `target_id`, including the default target.
+- New scan limits default to 10 subdirectory levels and 10000 files per service call. If a scan that worked in 3.x.x stops finding files, check the integration options and raise those limits if needed.
+- The new **Allowed directories** option defaults to blank, which preserves the older behavior of allowing any readable directory. If you configure allowed directories, service calls can only scan inside those roots.
 
 ## Support
 
