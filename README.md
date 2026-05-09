@@ -6,6 +6,8 @@ Note that the original project is archived by the author. This form includes upd
 
 ## Installation
 
+Requires Home Assistant 2026.5.0 or newer.
+
 1. Use HACS custom repository:
     [![Open your Home Assistant instance and show the add repository dialog of the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=ScottESanDiego&repository=Fetch-Latest-File&category=integration) <details><summary>Manual Instructions</summary>
         1. Go to any of the sections (integrations, frontend, automation).

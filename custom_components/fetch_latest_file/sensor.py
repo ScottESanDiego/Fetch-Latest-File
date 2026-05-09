@@ -6,15 +6,18 @@ import logging
 from typing import Any
 
 from homeassistant.components.sensor import SensorEntity
-from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers.device_registry import DeviceEntryType
+from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.typing import StateType
-from homeassistant.helpers.entity import DeviceInfo
 
+from . import FetchLatestFileConfigEntry
 from .const import (
+    CONF_MAX_TARGET_IDS,
+    CONF_TARGET_EXPIRY_HOURS,
     DOMAIN,
-    DEFAULT_MAX_TARGET_IDS as MAX_TARGET_IDS,
+    DEFAULT_MAX_TARGET_IDS,
     DEFAULT_TARGET_EXPIRY_HOURS,
 )
 
@@ -22,47 +25,47 @@ _LOGGER = logging.getLogger(__name__)
 
 async def async_setup_entry(
     hass: HomeAssistant,
-    entry: ConfigEntry,
+    entry: FetchLatestFileConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up the sensor platform."""
-    # Get configuration options
     options = entry.options
-    max_target_ids = options.get("max_target_ids", MAX_TARGET_IDS)
-    target_expiry_hours = options.get("target_expiry_hours", 24)
+    max_target_ids = options.get(CONF_MAX_TARGET_IDS, DEFAULT_MAX_TARGET_IDS)
+    target_expiry_hours = options.get(CONF_TARGET_EXPIRY_HOURS, DEFAULT_TARGET_EXPIRY_HOURS)
     
     sensor = FetchLatestFileSensor(entry, max_target_ids, target_expiry_hours)
+    entry.runtime_data.sensor_entity = sensor
     async_add_entities([sensor], True)
 
-    # Store the sensor entity instance for the service call to access
-    if DOMAIN not in hass.data:
-        hass.data[DOMAIN] = {}
-    if entry.entry_id not in hass.data[DOMAIN]:
-        hass.data[DOMAIN][entry.entry_id] = {}
-    hass.data[DOMAIN][entry.entry_id]['sensor_entity'] = sensor
     _LOGGER.info("FetchLatestFile Sensor setup complete.")
 
 
 class FetchLatestFileSensor(SensorEntity):
     """Representation of the FetchLatestFile Sensor."""
 
+    _attr_has_entity_name = True
     _attr_should_poll = False
 
-    def __init__(self, entry: ConfigEntry, max_target_ids: int, target_expiry_hours: int) -> None:
+    def __init__(
+        self,
+        entry: FetchLatestFileConfigEntry,
+        max_target_ids: int,
+        target_expiry_hours: int,
+    ) -> None:
         """Initialize the sensor."""
         self._entry = entry
         self._max_target_ids = max_target_ids
         self._target_expiry_seconds = target_expiry_hours * 3600  # Convert hours to seconds
         
         self._attr_unique_id = f"{entry.entry_id}_latest_file"
-        self._attr_name = "Fetch Latest File"
+        self._attr_name = None
         self._attr_icon = "mdi:file-find"
 
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, self._entry.entry_id)},
             name="Fetch Latest File",
             manufacturer="FetchLatestFile Integration",
-            entry_type="service",
+            entry_type=DeviceEntryType.SERVICE,
         )
 
         self._attr_native_value: StateType = None
@@ -70,13 +73,11 @@ class FetchLatestFileSensor(SensorEntity):
         
         # Dictionary of locks per target_id for parallel execution
         self._locks: dict[str, asyncio.Lock] = {}
-        self._locks_lock = asyncio.Lock()  # Lock for accessing the locks dict
 
     def get_lock(self, target_id: str) -> asyncio.Lock:
         """Get or create a lock for the given target_id."""
         if target_id not in self._locks:
             # Note: Creating locks is not async, so this is safe
-            # The locks_lock is only needed if we were doing async operations
             self._locks[target_id] = asyncio.Lock()
         return self._locks[target_id]
 
@@ -111,7 +112,7 @@ class FetchLatestFileSensor(SensorEntity):
         # Cleanup old/stale target_ids
         self._cleanup_old_targets()
         
-        self.async_schedule_update_ha_state(force_refresh=False)
+        self.async_write_ha_state()
 
     def _cleanup_old_targets(self) -> None:
         """Remove old or excess target_ids to prevent unbounded growth."""
@@ -216,4 +217,4 @@ class FetchLatestFileSensor(SensorEntity):
         self._attr_native_value = state
         # For backward compatibility, store under 'default' target_id
         self._attr_extra_state_attributes = {"default": attributes}
-        self.async_schedule_update_ha_state(force_refresh=False)
+        self.async_write_ha_state()

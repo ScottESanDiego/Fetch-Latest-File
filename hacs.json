@@ -1,7 +1,7 @@
 {
     "name": "Fetch Latest File",
     "hide_default_branch": true,
-    "homeassistant": "2025.10.0",
+    "homeassistant": "2026.5.0",
     "render_readme": true,
     "zip_release": false,
     "content_in_root": false

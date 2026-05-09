@@ -1,24 +1,46 @@
 """The Fetch Latest File integration."""
-import asyncio
+from __future__ import annotations
+
+from dataclasses import dataclass
 import logging
 import os
-import time
-from typing import Any
+from typing import TYPE_CHECKING
 
 import voluptuous as vol
 
-from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import Platform
+from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.helpers import config_validation as cv
+from homeassistant.util import dt as dt_util
 
 from .const import DOMAIN
 
+if TYPE_CHECKING:
+    from .sensor import FetchLatestFileSensor
+
 _LOGGER = logging.getLogger(__name__)
 
-# Define platforms to set up
-PLATFORMS = ["sensor"]
+PLATFORMS = [Platform.SENSOR]
+SERVICE_FETCH = "fetch"
 
 RESERVED_RESULT_KEYS = {"Overall", "timestamp", "status", "error", "error_details", "default"}
+
+
+@dataclass
+class FetchLatestFileRuntimeData:
+    """Runtime data for Fetch Latest File."""
+
+    sensor_entity: FetchLatestFileSensor | None = None
+
+
+type FetchLatestFileConfigEntry = ConfigEntry[FetchLatestFileRuntimeData]
+
+
+def _timestamp() -> str:
+    """Return a Home Assistant-local ISO timestamp string."""
+    return dt_util.now().isoformat(timespec="seconds")
+
 
 # Service schema for validation
 SERVICE_FETCH_SCHEMA = vol.Schema({
@@ -29,28 +51,21 @@ SERVICE_FETCH_SCHEMA = vol.Schema({
     vol.Optional("target_id"): cv.string,
 })
 
-async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+async def async_setup_entry(hass: HomeAssistant, entry: FetchLatestFileConfigEntry) -> bool:
     """Set up FetchLatestFile from a config entry."""
     _LOGGER.info("Setting up FetchLatestFile integration entry_id: %s", entry.entry_id)
 
-    # Ensure hass.data structure exists for this domain and entry
-    hass.data.setdefault(DOMAIN, {})
-    hass.data[DOMAIN].setdefault(entry.entry_id, {})
+    entry.runtime_data = FetchLatestFileRuntimeData()
 
-    # Set up the sensor platform using the correct function
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
-
-    # Register options update listener
-    entry.async_on_unload(entry.add_update_listener(async_reload_entry))
 
     async def handle_fetch(call: ServiceCall) -> None:
         """Handle the service call to fetch the latest file(s) and update the sensor."""
         _LOGGER.debug("Service fetch_latest_file.fetch called with data: %s", call.data)
 
-        # Use default sensor entity (backward compatibility)
-        sensor_entity: Any = hass.data[DOMAIN][entry.entry_id].get('sensor_entity')
+        sensor_entity = entry.runtime_data.sensor_entity
         if not sensor_entity:
-            _LOGGER.error("FetchLatestFile sensor entity not found in hass.data. Cannot update state.")
+            _LOGGER.error("FetchLatestFile sensor entity not found. Cannot update state.")
             return
         
         # Get target_id for lock management (defaults to 'default')
@@ -93,32 +108,20 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 sensor_entity.update_target_data(target_id, {
                     "error": "Invalid Size",
                     "error_details": f"Input: {min_size_str}, Error: {e}",
-                    "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S%z")
+                    "timestamp": _timestamp(),
                 })
                 return
 
             # Run blocking I/O operations in executor
             def search_files() -> list[tuple[float, str, str]]:
                 """Search for matching files (blocking operation)."""
-                # Security: Resolve to absolute path to prevent directory traversal
                 try:
                     real_directory = os.path.realpath(directory)
                 except OSError as e:
                     raise ValueError(f"Cannot resolve directory path: {directory}, Error: {e}")
                 
-                # Verify the resolved path still exists and is a directory
                 if not os.path.isdir(real_directory):
                     raise ValueError(f"Invalid or inaccessible directory: {directory}")
-                
-                # Security: Resolve to absolute path to prevent directory traversal
-                try:
-                    real_directory = os.path.realpath(directory)
-                except OSError as e:
-                    raise ValueError(f"Cannot resolve directory path: {directory}, Error: {e}")
-                
-                # Verify the resolved path still exists and is a directory
-                if not os.path.isdir(real_directory):
-                    raise ValueError(f"Resolved path is not a directory: {real_directory}")
                 
                 # Check read permissions
                 if not os.access(real_directory, os.R_OK):
@@ -150,7 +153,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     # Security: Ensure we're still within the allowed directory
                     try:
                         real_dirpath = os.path.realpath(dirpath)
-                        if not real_dirpath.startswith(real_directory):
+                        if os.path.commonpath([real_directory, real_dirpath]) != real_directory:
                             _LOGGER.warning("Skipping directory outside base path: %s", dirpath)
                             continue
                     except OSError:
@@ -169,7 +172,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                             # Security: Validate file path is still within base directory
                             try:
                                 real_file_path = os.path.realpath(file_path)
-                                if not real_file_path.startswith(real_directory):
+                                if os.path.commonpath([real_directory, real_file_path]) != real_directory:
                                     _LOGGER.warning("Skipping file outside base directory: %s", file_path)
                                     continue
                             except OSError:
@@ -208,7 +211,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 sensor_entity.update_target_data(target_id, {
                     "error": "Invalid Directory",
                     "error_details": str(e),
-                    "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S%z")
+                    "timestamp": _timestamp(),
                 })
                 return
             except OSError as e:
@@ -216,7 +219,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 sensor_entity.update_target_data(target_id, {
                     "error": "OS Error Walking Dir",
                     "error_details": f"Directory: {directory}, Error: {e}",
-                    "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S%z")
+                    "timestamp": _timestamp(),
                 })
                 return
 
@@ -224,7 +227,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 _LOGGER.info("No matching files found for the criteria.")
                 sensor_entity.update_target_data(target_id, {
                     "status": "No matching files",
-                    "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S%z")
+                    "timestamp": _timestamp(),
                 })
                 return
 
@@ -246,7 +249,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             # Prepare state and attributes for sensor
             file_results = {
                 "Overall": overall_latest_file_path,
-                "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S%z")
+                "timestamp": _timestamp(),
             }
             file_results.update(latest_by_extension)
 
@@ -257,36 +260,24 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             _LOGGER.debug("Target '%s' results: %s", target_id, file_results)
 
     # Register the service only once (check if it's already registered)
-    if not hass.services.has_service(DOMAIN, "fetch"):
-        hass.services.async_register(DOMAIN, "fetch", handle_fetch, schema=SERVICE_FETCH_SCHEMA)
+    if not hass.services.has_service(DOMAIN, SERVICE_FETCH):
+        hass.services.async_register(DOMAIN, SERVICE_FETCH, handle_fetch, schema=SERVICE_FETCH_SCHEMA)
 
     return True
 
 
-async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+async def async_unload_entry(hass: HomeAssistant, entry: FetchLatestFileConfigEntry) -> bool:
     """Unload a config entry."""
     _LOGGER.info("Unloading FetchLatestFile integration...")
 
-    # Only unregister the service if this is the last entry
-    if len(hass.config_entries.async_entries(DOMAIN)) == 1:
-        hass.services.async_remove(DOMAIN, "fetch")
-
-    # Unload platforms
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
 
-    # Clean up hass.data associated with this config entry
     if unload_ok:
-        if DOMAIN in hass.data and entry.entry_id in hass.data[DOMAIN]:
-            hass.data[DOMAIN].pop(entry.entry_id)
-            if not hass.data[DOMAIN]:
-                hass.data.pop(DOMAIN)
+        entry.runtime_data.sensor_entity = None
+        if not hass.config_entries.async_loaded_entries(DOMAIN):
+            hass.services.async_remove(DOMAIN, SERVICE_FETCH)
         _LOGGER.info("FetchLatestFile integration successfully unloaded.")
     else:
         _LOGGER.error("Failed to unload one or more FetchLatestFile platforms.")
 
     return unload_ok
-
-
-async def async_reload_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
-    """Reload the config entry when options change."""
-    await hass.config_entries.async_reload(entry.entry_id)
