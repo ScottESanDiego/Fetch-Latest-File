@@ -14,27 +14,55 @@ from homeassistant.config_entries import (
 from homeassistant.core import callback
 
 from .const import (
-    DOMAIN,
-    INTEGRATION_TITLE,
+    CONF_ALLOWED_DIRECTORIES,
+    CONF_MAX_FILES_TO_CHECK,
+    CONF_MAX_SCAN_DEPTH,
     CONF_MAX_TARGET_IDS,
     CONF_TARGET_EXPIRY_HOURS,
+    DEFAULT_ALLOWED_DIRECTORIES,
+    DEFAULT_MAX_FILES_TO_CHECK,
+    DEFAULT_MAX_SCAN_DEPTH,
     DEFAULT_MAX_TARGET_IDS,
     DEFAULT_TARGET_EXPIRY_HOURS,
+    DOMAIN,
+    INTEGRATION_TITLE,
 )
+from .scanner import normalize_allowed_directories
 
 
-OPTIONS_SCHEMA = vol.Schema(
-    {
-        vol.Optional(
-            CONF_MAX_TARGET_IDS,
-            default=DEFAULT_MAX_TARGET_IDS,
-        ): vol.All(vol.Coerce(int), vol.Range(min=1, max=100)),
-        vol.Optional(
-            CONF_TARGET_EXPIRY_HOURS,
-            default=DEFAULT_TARGET_EXPIRY_HOURS,
-        ): vol.All(vol.Coerce(int), vol.Range(min=1, max=168)),
-    }
-)
+def _allowed_directories_text(value: Any) -> str:
+    """Format allowed directories for the options form."""
+    return "\n".join(normalize_allowed_directories(value))
+
+
+def _options_schema(options: dict[str, Any]) -> vol.Schema:
+    """Return the options form schema."""
+    return vol.Schema(
+        {
+            vol.Optional(
+                CONF_ALLOWED_DIRECTORIES,
+                default=_allowed_directories_text(
+                    options.get(CONF_ALLOWED_DIRECTORIES, DEFAULT_ALLOWED_DIRECTORIES)
+                ),
+            ): str,
+            vol.Optional(
+                CONF_MAX_SCAN_DEPTH,
+                default=options.get(CONF_MAX_SCAN_DEPTH, DEFAULT_MAX_SCAN_DEPTH),
+            ): vol.All(vol.Coerce(int), vol.Range(min=0, max=100)),
+            vol.Optional(
+                CONF_MAX_FILES_TO_CHECK,
+                default=options.get(CONF_MAX_FILES_TO_CHECK, DEFAULT_MAX_FILES_TO_CHECK),
+            ): vol.All(vol.Coerce(int), vol.Range(min=1, max=100000)),
+            vol.Optional(
+                CONF_MAX_TARGET_IDS,
+                default=options.get(CONF_MAX_TARGET_IDS, DEFAULT_MAX_TARGET_IDS),
+            ): vol.All(vol.Coerce(int), vol.Range(min=1, max=100)),
+            vol.Optional(
+                CONF_TARGET_EXPIRY_HOURS,
+                default=options.get(CONF_TARGET_EXPIRY_HOURS, DEFAULT_TARGET_EXPIRY_HOURS),
+            ): vol.All(vol.Coerce(int), vol.Range(min=1, max=168)),
+        }
+    )
 
 
 class ConfigFlowHandler(ConfigFlow, domain=DOMAIN):
@@ -75,6 +103,9 @@ class ConfigFlowHandler(ConfigFlow, domain=DOMAIN):
                 title=INTEGRATION_TITLE,
                 data={},
                 options={
+                    CONF_ALLOWED_DIRECTORIES: list(DEFAULT_ALLOWED_DIRECTORIES),
+                    CONF_MAX_SCAN_DEPTH: DEFAULT_MAX_SCAN_DEPTH,
+                    CONF_MAX_FILES_TO_CHECK: DEFAULT_MAX_FILES_TO_CHECK,
                     CONF_MAX_TARGET_IDS: DEFAULT_MAX_TARGET_IDS,
                     CONF_TARGET_EXPIRY_HOURS: DEFAULT_TARGET_EXPIRY_HOURS,
                 },
@@ -91,12 +122,12 @@ class OptionsFlowHandler(OptionsFlowWithReload):
     ) -> ConfigFlowResult:
         """Manage the options."""
         if user_input is not None:
+            user_input[CONF_ALLOWED_DIRECTORIES] = normalize_allowed_directories(
+                user_input.get(CONF_ALLOWED_DIRECTORIES, DEFAULT_ALLOWED_DIRECTORIES)
+            )
             return self.async_create_entry(title="", data=user_input)
 
         return self.async_show_form(
             step_id="init",
-            data_schema=self.add_suggested_values_to_schema(
-                OPTIONS_SCHEMA,
-                self.config_entry.options,
-            ),
+            data_schema=_options_schema(self.config_entry.options),
         )

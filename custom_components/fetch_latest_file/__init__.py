@@ -1,10 +1,12 @@
 """The Fetch Latest File integration."""
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import datetime
 import logging
-import os
-from typing import TYPE_CHECKING
+import re
+from typing import TYPE_CHECKING, Any
 
 import voluptuous as vol
 
@@ -14,7 +16,24 @@ from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.helpers import config_validation as cv
 from homeassistant.util import dt as dt_util
 
-from .const import DOMAIN
+from .const import (
+    CONF_ALLOWED_DIRECTORIES,
+    CONF_MAX_FILES_TO_CHECK,
+    CONF_MAX_SCAN_DEPTH,
+    DEFAULT_ALLOWED_DIRECTORIES,
+    DEFAULT_MAX_FILES_TO_CHECK,
+    DEFAULT_MAX_SCAN_DEPTH,
+    DOMAIN,
+)
+from .scanner import (
+    FileSearchError,
+    SearchCriteria,
+    build_file_results,
+    normalize_allowed_directories,
+    normalize_extensions,
+    parse_min_size,
+    search_files,
+)
 
 if TYPE_CHECKING:
     from .sensor import FetchLatestFileSensor
@@ -24,7 +43,8 @@ _LOGGER = logging.getLogger(__name__)
 PLATFORMS = [Platform.SENSOR]
 SERVICE_FETCH = "fetch"
 
-RESERVED_RESULT_KEYS = {"Overall", "timestamp", "status", "error", "error_details", "default"}
+DEFAULT_TARGET_ID = "default"
+TARGET_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
 
 @dataclass
@@ -37,9 +57,33 @@ class FetchLatestFileRuntimeData:
 type FetchLatestFileConfigEntry = ConfigEntry[FetchLatestFileRuntimeData]
 
 
-def _timestamp() -> str:
-    """Return a Home Assistant-local ISO timestamp string."""
-    return dt_util.now().isoformat(timespec="seconds")
+def _timestamp() -> datetime:
+    """Return a Home Assistant-local timestamp."""
+    return dt_util.now().replace(microsecond=0)
+
+
+def _validate_target_id(value: str) -> str:
+    """Validate target IDs used as sensor attribute keys."""
+    if not TARGET_ID_PATTERN.fullmatch(value):
+        raise vol.Invalid(
+            "target_id must be 1-64 characters: letters, numbers, underscore, or hyphen"
+        )
+
+    return value
+
+
+def _int_option(options: Mapping[str, object], key: str, default: int) -> int:
+    """Return an integer option value with a safe fallback."""
+    value = options.get(key, default)
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        try:
+            return int(value)
+        except ValueError:
+            return default
+
+    return default
 
 
 # Service schema for validation
@@ -48,7 +92,10 @@ SERVICE_FETCH_SCHEMA = vol.Schema({
     vol.Required("filename"): cv.string,
     vol.Optional("extension"): vol.Any(cv.string, [cv.string]),
     vol.Optional("min_size", default="0B"): cv.string,
-    vol.Optional("target_id"): cv.string,
+    vol.Optional("target_id", default=DEFAULT_TARGET_ID): vol.All(
+        cv.string,
+        _validate_target_id,
+    ),
 })
 
 async def async_setup_entry(hass: HomeAssistant, entry: FetchLatestFileConfigEntry) -> bool:
@@ -67,42 +114,18 @@ async def async_setup_entry(hass: HomeAssistant, entry: FetchLatestFileConfigEnt
         if not sensor_entity:
             _LOGGER.error("FetchLatestFile sensor entity not found. Cannot update state.")
             return
-        
-        # Get target_id for lock management (defaults to 'default')
-        target_id = call.data.get("target_id", "default")
-        
+
+        target_id: str = call.data["target_id"]
+
         # Acquire lock based on target_id to allow parallel execution with different IDs
         async with sensor_entity.get_lock(target_id):
-
-            # Extract validated parameters
             directory: str = call.data["directory"]
             file_name_prefix: str = call.data["filename"]
             extensions = call.data.get("extension")
             min_size_str: str = call.data.get("min_size", "0B")
 
-            # Normalize extensions
-            if extensions is None:
-                extensions = []
-            elif isinstance(extensions, str):
-                extensions = [extensions]
-            cleaned_extensions = {ext.lower().strip('.') for ext in extensions if isinstance(ext, str)}
-
-            # Parse minimum size
-            min_size = 0
-            size_multiplier = {"B": 1, "K": 1024, "M": 1024**2, "G": 1024**3}
-            min_size_str_upper = min_size_str.upper().strip()
             try:
-                unit = next((u for u in size_multiplier if min_size_str_upper.endswith(u)), "B")
-                value_str = min_size_str_upper
-                if unit != "B":
-                    value_str = value_str[:-len(unit)]
-                else:
-                    value_str = value_str.rstrip('B')
-                if not value_str:
-                    raise ValueError("Numeric size value missing.")
-                min_size = int(value_str) * size_multiplier[unit]
-                if min_size < 0:
-                    raise ValueError("Minimum size cannot be negative.")
+                min_size = parse_min_size(min_size_str)
             except ValueError as e:
                 _LOGGER.error("Invalid 'min_size' input '%s': %s", min_size_str, e)
                 sensor_entity.update_target_data(target_id, {
@@ -112,104 +135,29 @@ async def async_setup_entry(hass: HomeAssistant, entry: FetchLatestFileConfigEnt
                 })
                 return
 
-            # Run blocking I/O operations in executor
-            def search_files() -> list[tuple[float, str, str]]:
-                """Search for matching files (blocking operation)."""
-                try:
-                    real_directory = os.path.realpath(directory)
-                except OSError as e:
-                    raise ValueError(f"Cannot resolve directory path: {directory}, Error: {e}")
-                
-                if not os.path.isdir(real_directory):
-                    raise ValueError(f"Invalid or inaccessible directory: {directory}")
-                
-                # Check read permissions
-                if not os.access(real_directory, os.R_OK):
-                    raise ValueError(f"No read permission for directory: {real_directory}")
-
-                # Security: Sanitize filename prefix to prevent path traversal patterns
-                if file_name_prefix and ('/' in file_name_prefix or '\\' in file_name_prefix or '..' in file_name_prefix):
-                    raise ValueError(f"Invalid filename prefix contains path separators or '..' : {file_name_prefix}")
-                
-                _LOGGER.debug("Searching in '%s' for files starting with '%s'", real_directory, file_name_prefix)
-                if cleaned_extensions:
-                    _LOGGER.debug("Filtering by extensions: %s", cleaned_extensions)
-                if min_size > 0:
-                    _LOGGER.debug("Filtering by minimum size: %s (%d bytes)", min_size_str, min_size)
-
-                found_files = []
-                max_depth = 10  # Limit recursion depth to prevent DoS
-                file_count = 0
-                max_files_to_check = 10000  # Limit number of files checked to prevent DoS
-                
-                for dirpath, dirnames, filenames in os.walk(real_directory, followlinks=False):  # Don't follow symlinks
-                    # Calculate current depth
-                    depth = dirpath[len(real_directory):].count(os.sep)
-                    if depth > max_depth:
-                        _LOGGER.debug("Skipping directory (too deep): %s", dirpath)
-                        dirnames.clear()  # Don't recurse deeper
-                        continue
-                    
-                    # Security: Ensure we're still within the allowed directory
-                    try:
-                        real_dirpath = os.path.realpath(dirpath)
-                        if os.path.commonpath([real_directory, real_dirpath]) != real_directory:
-                            _LOGGER.warning("Skipping directory outside base path: %s", dirpath)
-                            continue
-                    except OSError:
-                        _LOGGER.warning("Could not resolve path: %s", dirpath)
-                        continue
-                    
-                    for filename in filenames:
-                        file_count += 1
-                        if file_count > max_files_to_check:
-                            _LOGGER.warning("Reached maximum file check limit (%d), stopping search", max_files_to_check)
-                            return found_files
-                        
-                        if filename.lower().startswith(file_name_prefix.lower()):
-                            file_path = os.path.join(dirpath, filename)
-                            
-                            # Security: Validate file path is still within base directory
-                            try:
-                                real_file_path = os.path.realpath(file_path)
-                                if os.path.commonpath([real_directory, real_file_path]) != real_directory:
-                                    _LOGGER.warning("Skipping file outside base directory: %s", file_path)
-                                    continue
-                            except OSError:
-                                _LOGGER.warning("Could not resolve file path: %s", file_path)
-                                continue
-                            
-                            try:
-                                stats = os.stat(file_path, follow_symlinks=False)  # Don't follow symlinks
-                                
-                                # Skip if it's a symlink (extra safety)
-                                if os.path.islink(file_path):
-                                    _LOGGER.debug("Skipping symlink: %s", file_path)
-                                    continue
-                                
-                                mod_time = stats.st_mtime
-                                file_size = stats.st_size
-                                file_ext = os.path.splitext(filename)[1].lower().strip('.')
-
-                                extension_match = not cleaned_extensions or file_ext in cleaned_extensions
-                                size_match = file_size >= min_size
-
-                                if extension_match and size_match:
-                                    found_files.append((mod_time, file_path, file_ext))
-                                    _LOGGER.debug("Found matching file: %s (Extension: %s)", file_path, file_ext or "no_extension")
-
-                            except FileNotFoundError:
-                                _LOGGER.warning("File vanished during scan: %s", file_path)
-                            except OSError as e:
-                                _LOGGER.warning("OS error accessing stats for %s: %s", file_path, e)
-                return found_files
+            options = entry.options
+            criteria = SearchCriteria(
+                directory=directory,
+                filename_prefix=file_name_prefix,
+                extensions=normalize_extensions(extensions),
+                min_size=min_size,
+                allowed_directories=normalize_allowed_directories(
+                    options.get(CONF_ALLOWED_DIRECTORIES, DEFAULT_ALLOWED_DIRECTORIES)
+                ),
+                max_depth=_int_option(options, CONF_MAX_SCAN_DEPTH, DEFAULT_MAX_SCAN_DEPTH),
+                max_files_to_check=_int_option(
+                    options,
+                    CONF_MAX_FILES_TO_CHECK,
+                    DEFAULT_MAX_FILES_TO_CHECK,
+                ),
+            )
 
             try:
-                found_files = await hass.async_add_executor_job(search_files)
-            except ValueError as e:
-                _LOGGER.error("Directory validation error: %s", e)
+                found_files = await hass.async_add_executor_job(search_files, criteria)
+            except FileSearchError as e:
+                _LOGGER.error("File search validation error: %s", e)
                 sensor_entity.update_target_data(target_id, {
-                    "error": "Invalid Directory",
+                    "error": "Invalid Search",
                     "error_details": str(e),
                     "timestamp": _timestamp(),
                 })
@@ -231,37 +179,27 @@ async def async_setup_entry(hass: HomeAssistant, entry: FetchLatestFileConfigEnt
                 })
                 return
 
-            # Sort files by modification time, newest first
-            found_files.sort(key=lambda x: x[0], reverse=True)
-
-            # Get the path of the absolute latest file
-            overall_latest_file_path = found_files[0][1]
-
-            # Find the latest file for each extension
-            latest_by_extension = {}
-            for mod_time, file_path, file_ext in found_files:
-                extension_key = file_ext or "no_extension"
-                if extension_key in RESERVED_RESULT_KEYS:
-                    extension_key = f"ext_{extension_key}"
-                if extension_key not in latest_by_extension:
-                    latest_by_extension[extension_key] = file_path
-
-            # Prepare state and attributes for sensor
-            file_results = {
-                "Overall": overall_latest_file_path,
-                "timestamp": _timestamp(),
-            }
-            file_results.update(latest_by_extension)
+            file_results: dict[str, Any] = build_file_results(found_files)
+            file_results["timestamp"] = _timestamp()
 
             # Update sensor entity with target_id namespaced results
             sensor_entity.update_target_data(target_id, file_results)
 
-            _LOGGER.info("Fetch completed for target_id '%s'. Sensor '%s' updated.", target_id, sensor_entity.entity_id)
+            _LOGGER.info(
+                "Fetch completed for target_id '%s'. Sensor '%s' updated.",
+                target_id,
+                sensor_entity.entity_id,
+            )
             _LOGGER.debug("Target '%s' results: %s", target_id, file_results)
 
     # Register the service only once (check if it's already registered)
     if not hass.services.has_service(DOMAIN, SERVICE_FETCH):
-        hass.services.async_register(DOMAIN, SERVICE_FETCH, handle_fetch, schema=SERVICE_FETCH_SCHEMA)
+        hass.services.async_register(
+            DOMAIN,
+            SERVICE_FETCH,
+            handle_fetch,
+            schema=SERVICE_FETCH_SCHEMA,
+        )
 
     return True
 

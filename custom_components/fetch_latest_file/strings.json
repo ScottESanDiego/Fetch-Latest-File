@@ -14,8 +14,11 @@
     "step": {
       "init": {
         "title": "Fetch Latest File Options",
-        "description": "Configure cleanup behavior for target_id results",
+        "description": "Configure allowed search directories, scan limits, and cleanup behavior for target_id results",
         "data": {
+          "allowed_directories": "Allowed directories, one per line. Leave blank to allow any readable directory.",
+          "max_scan_depth": "Maximum subdirectory depth to scan (0-100)",
+          "max_files_to_check": "Maximum files to check per service call (1-100000)",
           "max_target_ids": "Maximum number of target_ids to keep (1-100)",
           "target_expiry_hours": "Remove target_ids older than (hours, 1-168)"
         }
@@ -49,7 +52,7 @@
         },
         "target_id": {
           "name": "Target ID",
-          "description": "A unique identifier for this fetch operation. Service calls with different target_id values can run in parallel, while calls with the same target_id will execute sequentially to prevent conflicts. If not specified, uses 'default'.",
+          "description": "A unique identifier for this fetch operation. Use 1-64 letters, numbers, underscores, or hyphens. Service calls with different target_id values can run in parallel, while calls with the same target_id will execute sequentially to prevent conflicts. If not specified, uses 'default'.",
           "example": "camera1"
         }
       }

@@ -26,7 +26,7 @@ Once you've set up the custom component in your Home Assistant instance, you can
 - `filename`: The start of the file name to search for. *(Required)*
 - `extension`: The file extension(s) to search for. *(Optional)*
 - `min_size`: The minimum size of the files to fetch. Specify the size as a string with a unit: B for bytes, K for kilobytes, M for megabytes, G for gigabytes. For example, "1M" for 1 megabyte. *(Optional)*
-- `target_id`: A unique identifier for this fetch operation. Allows parallel execution and namespaced results. If not specified, uses "default". *(Optional)*
+- `target_id`: A unique identifier for this fetch operation. Allows parallel execution and namespaced results. Use 1-64 letters, numbers, underscores, or hyphens. If not specified, uses "default". *(Optional)*
 
 Here's an example of how to call this service:
 
@@ -64,9 +64,9 @@ default:
 **Accessing attributes in templates:**
 ```yaml
 # Access default target results (works without target_id)
-{{ state_attr('sensor.fetch_latest_file', 'jpg') }}
-{{ state_attr('sensor.fetch_latest_file', 'mp4') }}
-{{ state_attr('sensor.fetch_latest_file', 'Overall') }}
+{{ state_attr('sensor.fetch_latest_file', 'default')['jpg'] }}
+{{ state_attr('sensor.fetch_latest_file', 'default')['mp4'] }}
+{{ state_attr('sensor.fetch_latest_file', 'default')['Overall'] }}
 
 # Access specific target results (when using target_id parameter)
 {{ state_attr('sensor.fetch_latest_file', 'camera1')['Overall'] }}
@@ -74,7 +74,7 @@ default:
 {{ state_attr('sensor.fetch_latest_file', 'default')['mp4'] }}
 ```
 
-**Note**: Only extensions with matching files will be present. Extension keys are lowercase and do not include the dot. If an extension conflicts with a reserved result key, such as `timestamp`, it is prefixed with `ext_`. If no files are found, the target will contain a `status: "No matching files"` entry.
+**Note**: Only extensions with matching files will be present. Extension keys are lowercase and do not include the dot. Results are always stored under a `target_id`, including the default target. If an extension conflicts with a reserved result key, such as `timestamp`, it is prefixed with `ext_`. If no files are found, the target will contain a `status: "No matching files"` entry.
 
 ## Parallel Execution
 
@@ -108,6 +108,13 @@ The integration provides GUI-configurable options to control cleanup behavior:
 2. Find **Fetch Latest File** integration
 3. Click **Configure**
 4. Adjust settings:
+   - **Allowed directories**: One directory per line (default: blank)
+     - When set, service calls can only scan directories inside one of these roots
+     - Leave blank to allow any readable directory, matching earlier behavior
+   - **Maximum subdirectory depth to scan**: 0-100 (default: 10)
+     - `0` scans only the requested directory
+   - **Maximum files to check per service call**: 1-100000 (default: 10000)
+     - Stops large scans from running indefinitely
    - **Maximum number of target_ids to keep**: 1-100 (default: 20)
      - Limits how many different `target_id` results are stored
      - Oldest targets are removed when limit is exceeded

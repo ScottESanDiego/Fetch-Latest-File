@@ -24,6 +24,6 @@ fetch:
       required: false
     target_id:
       name: Target ID
-      description: A unique identifier for this fetch operation. Service calls with different target_id values can run in parallel, while calls with the same target_id will execute sequentially to prevent conflicts. If not specified, uses 'default'.
+      description: A unique identifier for this fetch operation. Use 1-64 letters, numbers, underscores, or hyphens. Service calls with different target_id values can run in parallel, while calls with the same target_id will execute sequentially to prevent conflicts. If not specified, uses 'default'.
       example: "camera1"
       required: false
