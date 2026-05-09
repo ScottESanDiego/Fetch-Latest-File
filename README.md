@@ -37,7 +37,7 @@ data:
   min_size: "1M"
 ```
 
-This will search for the latest `.jpg` and `.mp4` files that start with "Reolink-" in the specified directory and are at least 1 megabyte in size. The result is then stored in a entity state attribute which you can access in your automations, scripts, or templates.
+This will search for the latest `.jpg` and `.mp4` files that start with "Reolink-" in the specified directory and are at least 1 megabyte in size. The result is then stored in entity state attributes which you can access in your automations, scripts, or templates.
 
 ### Sensor State and Attributes
 
@@ -45,36 +45,34 @@ The integration creates an entity **sensor.fetch_latest_file** that updates when
 
 - **State**: Timestamp of the most recent fetch operation (e.g., `2025-10-26T14:30:45-0700`)
 - **Attributes**: Results organized by `target_id`, with each target containing:
-  - `Overall`: The absolute latest file across all types
-  - `Image`: The latest image file (jpg, jpeg, png, gif, bmp, webp, svg, heic, raw)
-  - `Video`: The latest video file (mp4, mkv, webm, flv, vob, ogv, avi, mov, wmv, mpg, mpeg, m4v)
-  - `Audio`: The latest audio file (mp3, flac, wav, aac, ogg, wma, m4a, opus)
-  - `Generic`: The latest file that doesn't match the above categories
+  - `Overall`: The absolute latest file across all matched files
+  - One attribute for each matched extension, such as `jpg`, `mp4`, or `txt`
+  - `no_extension`: The latest matched file without a file extension, if any
   - `timestamp`: When this specific target was last updated
 
 **Example attributes:**
 ```yaml
 default:
   Overall: /ftproot/Reolink-OutdoorGarageNorth_20231015_143022.mp4
-  Video: /ftproot/Reolink-OutdoorGarageNorth_20231015_143022.mp4
-  Image: /ftproot/Reolink-OutdoorGarageNorth_20231015_143020.jpg
+  mp4: /ftproot/Reolink-OutdoorGarageNorth_20231015_143022.mp4
+  jpg: /ftproot/Reolink-OutdoorGarageNorth_20231015_143020.jpg
   timestamp: "2025-10-26T14:30:45-0700"
 ```
 
 **Accessing attributes in templates:**
 ```yaml
-# Access default target results (backward compatible with version 3.0 and earlier - works without target_id)
-{{ state_attr('sensor.fetch_latest_file', 'Image') }}
-{{ state_attr('sensor.fetch_latest_file', 'Video') }}
+# Access default target results (works without target_id)
+{{ state_attr('sensor.fetch_latest_file', 'jpg') }}
+{{ state_attr('sensor.fetch_latest_file', 'mp4') }}
 {{ state_attr('sensor.fetch_latest_file', 'Overall') }}
 
 # Access specific target results (when using target_id parameter)
 {{ state_attr('sensor.fetch_latest_file', 'camera1')['Overall'] }}
-{{ state_attr('sensor.fetch_latest_file', 'camera2')['Image'] }}
-{{ state_attr('sensor.fetch_latest_file', 'default')['Video'] }}
+{{ state_attr('sensor.fetch_latest_file', 'camera2')['jpg'] }}
+{{ state_attr('sensor.fetch_latest_file', 'default')['mp4'] }}
 ```
 
-**Note**: Only attribute types with matching files will be present. If no files are found, the target will contain a `status: "No matching files"` entry.
+**Note**: Only extensions with matching files will be present. Extension keys are lowercase and do not include the dot. If an extension conflicts with a reserved result key, such as `timestamp`, it is prefixed with `ext_`. If no files are found, the target will contain a `status: "No matching files"` entry.
 
 ## Parallel Execution
 
@@ -128,12 +126,7 @@ This component can also be used in many other scenarios, such as:
 - Fetching the latest screenshot from a home automation event that is of a certain size
 - Retrieving the latest log files of a certain size for debugging purposes
 
-List of supported file extensions categories:
-
-- Image: jpg, jpeg, png, gif, bmp, webp, svg, heic, raw
-- Video: mp4, mkv, webm, flv, vob, ogv, avi, mov, wmv, mpg, mpeg, m4v
-- Audio: mp3, flac, wav, aac, ogg, wma, m4a, opus
-- Generic: none of the above.
+Files are reported by their actual extension. For example, matching `.jpg`, `.png`, and `.mp4` files will produce `jpg`, `png`, and `mp4` attributes. Files without an extension are reported under `no_extension`.
 
 ## Support
 

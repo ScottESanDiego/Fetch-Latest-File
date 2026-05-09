@@ -88,6 +88,12 @@ class FetchLatestFileSensor(SensorEntity):
         if not isinstance(self._attr_extra_state_attributes, dict):
             self._attr_extra_state_attributes = {}
         
+        previous_default = self._attr_extra_state_attributes.get("default", {})
+        if target_id == "default" and isinstance(previous_default, dict):
+            for key, value in previous_default.items():
+                if key != "timestamp" and self._attr_extra_state_attributes.get(key) == value:
+                    self._attr_extra_state_attributes.pop(key, None)
+
         # Store data under the target_id key
         self._attr_extra_state_attributes[target_id] = data
         
@@ -211,5 +217,3 @@ class FetchLatestFileSensor(SensorEntity):
         # For backward compatibility, store under 'default' target_id
         self._attr_extra_state_attributes = {"default": attributes}
         self.async_schedule_update_ha_state(force_refresh=False)
-
-

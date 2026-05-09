@@ -11,12 +11,14 @@ from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.helpers import config_validation as cv
 
-from .const import DOMAIN, IMAGE_EXTS, VIDEO_EXTS, AUDIO_EXTS
+from .const import DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
 
 # Define platforms to set up
 PLATFORMS = ["sensor"]
+
+RESERVED_RESULT_KEYS = {"Overall", "timestamp", "status", "error", "error_details", "default"}
 
 # Service schema for validation
 SERVICE_FETCH_SCHEMA = vol.Schema({
@@ -96,7 +98,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 return
 
             # Run blocking I/O operations in executor
-            def search_files() -> list[tuple[float, str, str, str]]:
+            def search_files() -> list[tuple[float, str, str]]:
                 """Search for matching files (blocking operation)."""
                 # Security: Resolve to absolute path to prevent directory traversal
                 try:
@@ -190,15 +192,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                                 size_match = file_size >= min_size
 
                                 if extension_match and size_match:
-                                    file_type = "generic"
-                                    if file_ext in IMAGE_EXTS:
-                                        file_type = "image"
-                                    elif file_ext in VIDEO_EXTS:
-                                        file_type = "video"
-                                    elif file_ext in AUDIO_EXTS:
-                                        file_type = "audio"
-                                    found_files.append((mod_time, file_path, file_ext, file_type))
-                                    _LOGGER.debug("Found matching file: %s (Type: %s)", file_path, file_type)
+                                    found_files.append((mod_time, file_path, file_ext))
+                                    _LOGGER.debug("Found matching file: %s (Extension: %s)", file_path, file_ext or "no_extension")
 
                             except FileNotFoundError:
                                 _LOGGER.warning("File vanished during scan: %s", file_path)
@@ -239,29 +234,21 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             # Get the path of the absolute latest file
             overall_latest_file_path = found_files[0][1]
 
-            # Find the latest file for each type
-            latest_by_type = {}
-            processed_types = set()
-            for mod_time, file_path, file_ext, file_type in found_files:
-                if file_type not in processed_types:
-                    latest_by_type[file_type] = file_path
-                    processed_types.add(file_type)
-                if len(processed_types) >= 4:
-                    break
+            # Find the latest file for each extension
+            latest_by_extension = {}
+            for mod_time, file_path, file_ext in found_files:
+                extension_key = file_ext or "no_extension"
+                if extension_key in RESERVED_RESULT_KEYS:
+                    extension_key = f"ext_{extension_key}"
+                if extension_key not in latest_by_extension:
+                    latest_by_extension[extension_key] = file_path
 
             # Prepare state and attributes for sensor
             file_results = {
                 "Overall": overall_latest_file_path,
                 "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S%z")
             }
-            if 'image' in latest_by_type:
-                file_results['Image'] = latest_by_type['image']
-            if 'video' in latest_by_type:
-                file_results['Video'] = latest_by_type['video']
-            if 'audio' in latest_by_type:
-                file_results['Audio'] = latest_by_type['audio']
-            if 'generic' in latest_by_type:
-                file_results['Generic'] = latest_by_type['generic']
+            file_results.update(latest_by_extension)
 
             # Update sensor entity with target_id namespaced results
             sensor_entity.update_target_data(target_id, file_results)
@@ -303,4 +290,3 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 async def async_reload_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
     """Reload the config entry when options change."""
     await hass.config_entries.async_reload(entry.entry_id)
-

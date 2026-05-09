@@ -3,7 +3,7 @@
     "step": {
       "user": {
         "title": "Set up Fetch Latest File",
-        "description": "This integration allows you to fetch the most recently modified files from a directory based on filename patterns, extensions, and minimum file size."
+        "description": "This integration allows you to fetch the most recently modified files from a directory based on filename patterns, extensions, and minimum file size. Results are reported by actual file extension."
       }
     },
     "abort": {
@@ -25,7 +25,7 @@
   "services": {
     "fetch": {
       "name": "Fetch latest file",
-      "description": "Fetches the most recent file that starts with the given filename in the specified directory. Optionally, filter by file extension and/or minimum file size.",
+      "description": "Fetches the most recent file that starts with the given filename in the specified directory, plus the latest match for each file extension. Optionally, filter by file extension and/or minimum file size.",
       "fields": {
         "directory": {
           "name": "Directory",
@@ -39,7 +39,7 @@
         },
         "extension": {
           "name": "Extension",
-          "description": "The file extension(s) to search for. Can be a single extension or a list of extensions. Do not include the dot.",
+          "description": "The file extension(s) to search for. Can be a single extension or a list of extensions. Do not include the dot. Results are keyed by actual extension, such as jpg or mp4. Reserved result keys are prefixed with ext_.",
           "example": "[\"jpg\", \"mp4\"]"
         },
         "min_size": {

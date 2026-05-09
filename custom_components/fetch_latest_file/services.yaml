@@ -1,6 +1,6 @@
 fetch:
   name: Fetch Latest File
-  description: Fetches the most recent file that starts with the given filename in the specified directory. Optionally, filter by file extension and/or minimum file size.
+  description: Fetches the most recent file that starts with the given filename in the specified directory, plus the latest match for each file extension. Optionally, filter by file extension and/or minimum file size.
   fields:
     directory:
       name: Directory
@@ -14,7 +14,7 @@ fetch:
       required: true
     extension:
       name: Extension
-      description: The extension of the file to fetch. If multiple extensions are given, the service will fetch the latest file for each extension.
+      description: The extension(s) of the files to fetch. If multiple extensions are given, the sensor attributes will include the latest file for each matched extension.
       example: ["jpg", "mp4"]
       required: false
     min_size:
@@ -27,4 +27,3 @@ fetch:
       description: A unique identifier for this fetch operation. Service calls with different target_id values can run in parallel, while calls with the same target_id will execute sequentially to prevent conflicts. If not specified, uses 'default'.
       example: "camera1"
       required: false
-
