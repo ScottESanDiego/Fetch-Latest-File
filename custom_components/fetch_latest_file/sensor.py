@@ -19,6 +19,7 @@ from .const import (
     DOMAIN,
     DEFAULT_MAX_TARGET_IDS,
     DEFAULT_TARGET_EXPIRY_HOURS,
+    INTEGRATION_TITLE,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -64,7 +65,7 @@ class FetchLatestFileSensor(SensorEntity):
 
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, self._entry.entry_id)},
-            name="Fetch Latest File",
+            name=INTEGRATION_TITLE,
             manufacturer="FetchLatestFile Integration",
             entry_type=DeviceEntryType.SERVICE,
         )

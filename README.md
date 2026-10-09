@@ -235,6 +235,12 @@ Other upgrade notes:
 - New scan limits default to 10 subdirectory levels and 10000 files per service call. If a scan that worked in 3.x.x stops finding files, check the integration options and raise those limits if needed.
 - The new **Allowed directories** option defaults to blank, which preserves the older behavior of allowing any readable directory. If you configure allowed directories, service calls can only scan inside those roots.
 
+## UI text and translations
+
+Home Assistant UI labels, descriptions, and configuration-flow messages are maintained in `custom_components/fetch_latest_file/translations/en.json`. Additional languages use the same keys in `translations/<language_code>.json`, with literal translated text. Custom integrations do not use Core's `strings.json` or build-time translation references.
+
+`services.yaml` defines selectors, required fields, defaults, and example values. Keep UI prose in the translation files so there is one English source to maintain. The integration name used in Python is shared through `INTEGRATION_TITLE` in `const.py`; status values and diagnostic codes are part of the automation interface.
+
 ## Support
 
 Feel free to [open an issue](https://github.com/ScottESanDiego/Fetch-Latest-File/issues) for any problems or feature requests.

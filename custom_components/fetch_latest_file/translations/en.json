@@ -1,0 +1,76 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Set up Fetch Latest File",
+        "description": "This integration allows you to list the most recently modified files from a directory based on filename patterns, extensions, and minimum file size. Results are reported by actual file extension."
+      }
+    },
+    "abort": {
+      "already_configured": "Fetch Latest File is already configured.",
+      "single_instance_allowed": "Only a single instance of this integration is allowed."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Fetch Latest File Options",
+        "description": "Configure allowed search directories, scan limits, and cleanup of saved target results.",
+        "data": {
+          "allowed_directories": "Allowed directories",
+          "max_scan_depth": "Maximum scan depth",
+          "max_files_to_check": "Maximum files to check",
+          "max_target_ids": "Maximum saved targets",
+          "target_expiry_hours": "Target expiry (hours)"
+        },
+        "data_description": {
+          "allowed_directories": "Enter one directory per line. Leave blank to allow any readable directory.",
+          "max_scan_depth": "Scan up to this many subdirectory levels (0-100). Zero searches only the top-level directory.",
+          "max_files_to_check": "Check at most this many files per scan (1-100000). This also limits watched directories.",
+          "max_target_ids": "Keep results for at most this many target IDs (1-100). The oldest results are removed first.",
+          "target_expiry_hours": "Remove saved target results older than this many hours (1-168)."
+        }
+      }
+    }
+  },
+  "services": {
+    "fetch": {
+      "name": "Fetch latest file",
+      "description": "Fetches the most recent file that starts with the given filename in the specified directory, plus the latest match for each file extension. Optionally, filter by file extension and/or minimum file size.",
+      "fields": {
+        "directory": {
+          "name": "Directory",
+          "description": "The directory to search for files. The search is recursive and includes subdirectories."
+        },
+        "filename": {
+          "name": "File name prefix",
+          "description": "The beginning of the filename of the file to fetch. Case-insensitive."
+        },
+        "extension": {
+          "name": "Extension",
+          "description": "Extensions to search for, with each extension as a separate entry, without the dot (for example, jpg and mp4). Leave disabled or empty to search all extensions. Results that happen to use a reserved keyword are prefixed with ext_."
+        },
+        "min_size": {
+          "name": "Minimum file size",
+          "description": "The minimum size of the file to fetch. Specify as a string with a unit: B (bytes), K (kilobytes), M (megabytes), or G (gigabytes)."
+        },
+        "target_id": {
+          "name": "Target ID",
+          "description": "A unique identifier for this fetch operation. Use 1-64 letters, numbers, underscores, or hyphens. Service calls with different target_id values can run in parallel, while calls with the same target_id will execute sequentially to prevent conflicts. If not specified, uses 'default'."
+        },
+        "wait_for_upload": {
+          "name": "Wait for upload",
+          "description": "Wait for a filesystem close notifications or unchanged file modification time. Defaults to false. If a timeout happens, the FetchStatus field will indicate that."
+        },
+        "timeout": {
+          "name": "Upload timeout",
+          "description": "Maximum time to wait (in seconds) for a file to meet the criteria, typically for being uploaded from a remote system. Defaults to 30."
+        },
+        "quiet_period": {
+          "name": "Quiet period",
+          "description": "How long (in seconds) the file should be unchanged before assuming it's closed. Defaults to 2."
+        }
+      }
+    }
+  }
+}
