@@ -33,6 +33,10 @@ Once you've set up the custom component in your Home Assistant instance, you can
 - `quiet_period`: Positive seconds of unchanged file identity, size, and modification time used when no writer-close notification is available. Defaults to `2`. *(Optional)*
 - `target_id`: A unique identifier for this fetch operation. Allows parallel execution and namespaced results. Use 1-64 letters, numbers, underscores, or hyphens. If not specified, uses "default". *(Optional)*
 
+All eight parameters are available in the visual action editor, both in automations/scripts and under **Developer tools → Actions**. Select **Fetch Latest File: Fetch latest file**, enter the directory and filename prefix, and enable any optional fields you need. Add each extension as a separate entry (for example, `jpg` and `mp4`); leave the extension field disabled or empty to search all extensions. Minimum size remains a text value such as `1M`, upload waiting uses a toggle, and timeout/quiet period use numeric inputs in seconds.
+
+After installing an update to the service field definitions, restart Home Assistant and refresh the browser before reopening the action editor.
+
 Here's an example of how to call this service:
 
 ```yaml

@@ -42,7 +42,7 @@
         },
         "extension": {
           "name": "Extension",
-          "description": "The file extension(s) to search for. Can be a single extension or a list of extensions. Do not include the dot. Results are keyed by actual extension, such as jpg or mp4. Reserved result keys are prefixed with ext_.",
+          "description": "Add each extension as a separate entry, without the dot (for example, jpg and mp4). Leave disabled or empty to search all extensions. YAML also accepts a single extension string. Results are keyed by actual extension; reserved result keys are prefixed with ext_.",
           "example": "[\"jpg\", \"mp4\"]"
         },
         "min_size": {
