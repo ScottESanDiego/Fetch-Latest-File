@@ -1,10 +1,11 @@
 """Config flow for Fetch Latest File integration."""
+
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any
 
-import voluptuous as vol
-
+import probatio as vol
 from homeassistant.config_entries import (
     ConfigEntry,
     ConfigFlow,
@@ -12,6 +13,7 @@ from homeassistant.config_entries import (
     OptionsFlowWithReload,
 )
 from homeassistant.core import callback
+from homeassistant.helpers import selector
 
 from .const import (
     CONF_ALLOWED_DIRECTORIES,
@@ -27,6 +29,7 @@ from .const import (
     DOMAIN,
     INTEGRATION_TITLE,
 )
+from .runtime import integer_option, validate_allowed_roots, validate_options
 from .scanner import normalize_allowed_directories
 
 
@@ -35,7 +38,7 @@ def _allowed_directories_text(value: Any) -> str:
     return "\n".join(normalize_allowed_directories(value))
 
 
-def _options_schema(options: dict[str, Any]) -> vol.Schema:
+def _options_schema(options: Mapping[str, Any]) -> vol.Schema:
     """Return the options form schema."""
     return vol.Schema(
         {
@@ -44,23 +47,67 @@ def _options_schema(options: dict[str, Any]) -> vol.Schema:
                 default=_allowed_directories_text(
                     options.get(CONF_ALLOWED_DIRECTORIES, DEFAULT_ALLOWED_DIRECTORIES)
                 ),
-            ): str,
+            ): selector.TextSelector(selector.TextSelectorConfig(multiline=True)),
             vol.Optional(
                 CONF_MAX_SCAN_DEPTH,
                 default=options.get(CONF_MAX_SCAN_DEPTH, DEFAULT_MAX_SCAN_DEPTH),
-            ): vol.All(vol.Coerce(int), vol.Range(min=0, max=100)),
+            ): vol.All(
+                selector.NumberSelector(
+                    selector.NumberSelectorConfig(
+                        min=0,
+                        max=100,
+                        step=1,
+                        mode=selector.NumberSelectorMode.BOX,
+                    )
+                ),
+                lambda value: integer_option(value, CONF_MAX_SCAN_DEPTH),
+            ),
             vol.Optional(
                 CONF_MAX_FILES_TO_CHECK,
-                default=options.get(CONF_MAX_FILES_TO_CHECK, DEFAULT_MAX_FILES_TO_CHECK),
-            ): vol.All(vol.Coerce(int), vol.Range(min=1, max=100000)),
+                default=options.get(
+                    CONF_MAX_FILES_TO_CHECK, DEFAULT_MAX_FILES_TO_CHECK
+                ),
+            ): vol.All(
+                selector.NumberSelector(
+                    selector.NumberSelectorConfig(
+                        min=1,
+                        max=100000,
+                        step=1,
+                        mode=selector.NumberSelectorMode.BOX,
+                    )
+                ),
+                lambda value: integer_option(value, CONF_MAX_FILES_TO_CHECK),
+            ),
             vol.Optional(
                 CONF_MAX_TARGET_IDS,
                 default=options.get(CONF_MAX_TARGET_IDS, DEFAULT_MAX_TARGET_IDS),
-            ): vol.All(vol.Coerce(int), vol.Range(min=1, max=100)),
+            ): vol.All(
+                selector.NumberSelector(
+                    selector.NumberSelectorConfig(
+                        min=1,
+                        max=100,
+                        step=1,
+                        mode=selector.NumberSelectorMode.BOX,
+                    )
+                ),
+                lambda value: integer_option(value, CONF_MAX_TARGET_IDS),
+            ),
             vol.Optional(
                 CONF_TARGET_EXPIRY_HOURS,
-                default=options.get(CONF_TARGET_EXPIRY_HOURS, DEFAULT_TARGET_EXPIRY_HOURS),
-            ): vol.All(vol.Coerce(int), vol.Range(min=1, max=168)),
+                default=options.get(
+                    CONF_TARGET_EXPIRY_HOURS, DEFAULT_TARGET_EXPIRY_HOURS
+                ),
+            ): vol.All(
+                selector.NumberSelector(
+                    selector.NumberSelectorConfig(
+                        min=1,
+                        max=168,
+                        step=1,
+                        mode=selector.NumberSelectorMode.BOX,
+                    )
+                ),
+                lambda value: integer_option(value, CONF_TARGET_EXPIRY_HOURS),
+            ),
         }
     )
 
@@ -96,7 +143,9 @@ class ConfigFlowHandler(ConfigFlow, domain=DOMAIN):
         self._abort_if_unique_id_configured()
 
         if self._async_current_entries():
-            return self.async_abort(reason="single_instance_allowed")
+            return self.async_abort(
+                reason="single_instance_allowed", translation_domain="homeassistant"
+            )
 
         if user_input is not None:
             return self.async_create_entry(
@@ -121,13 +170,23 @@ class OptionsFlowHandler(OptionsFlowWithReload):
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
         """Manage the options."""
+        errors: dict[str, str] = {}
+        description_placeholders: dict[str, str] = {}
         if user_input is not None:
-            user_input[CONF_ALLOWED_DIRECTORIES] = normalize_allowed_directories(
-                user_input.get(CONF_ALLOWED_DIRECTORIES, DEFAULT_ALLOWED_DIRECTORIES)
-            )
-            return self.async_create_entry(title="", data=user_input)
+            try:
+                options = validate_options(user_input)
+                options = await self.hass.async_add_executor_job(
+                    validate_allowed_roots, options
+                )
+            except vol.Invalid as err:
+                errors["base"] = "invalid_options"
+                description_placeholders["error"] = str(err)
+            else:
+                return self.async_create_entry(title="", data=options)
 
         return self.async_show_form(
             step_id="init",
-            data_schema=_options_schema(self.config_entry.options),
+            data_schema=_options_schema(user_input or self.config_entry.options),
+            errors=errors,
+            description_placeholders=description_placeholders,
         )

@@ -1,136 +1,402 @@
-"""Exercise real service registration, validation, sensor writes and unload."""
+"""Actual HA registration, action responses, sensor publication and lifecycle."""
+
 import asyncio
-from pathlib import Path
-import tempfile
-import unittest
+import os
+from datetime import timedelta
 from unittest.mock import patch
 
-import voluptuous as vol
+import probatio as vol
+import pytest
+from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
+from homeassistant.helpers import entity_registry as er
+from homeassistant.setup import async_setup_component
+from homeassistant.util import dt as dt_util
+from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from support import AsyncCase, ConfigEntry, Hass
 from custom_components import fetch_latest_file as integration
+from custom_components.fetch_latest_file.const import DOMAIN
 from custom_components.fetch_latest_file.scanner import MatchedFile
 
-
-class SchemaTests(unittest.TestCase):
-    def test_schema_defaults_and_current_min_size_spelling(self):
-        data = integration.SERVICE_FETCH_SCHEMA({"directory": "/tmp", "filename": "upload"})
-        self.assertEqual(data["min_size"], "0B")
-        self.assertIs(data["wait_for_upload"], False)
-        self.assertEqual(data["timeout"], 30)
-        self.assertEqual(data["quiet_period"], 2)
-        for old_name in ("MinSize", "minsize"):
-            with self.subTest(name=old_name), self.assertRaises(vol.Invalid):
-                integration.SERVICE_FETCH_SCHEMA({"directory": "/tmp", "filename": "", old_name: "1M"})
-
-    def test_wait_durations_must_be_finite_and_positive(self):
-        for field in ("timeout", "quiet_period"):
-            for value in (0, -1, "nan", float("nan"), "inf", float("inf"), -float("inf")):
-                with self.subTest(field=field, value=value), self.assertRaises(vol.Invalid):
-                    integration.SERVICE_FETCH_SCHEMA({"directory": "/tmp", "filename": "", field: value})
+pytestmark = pytest.mark.asyncio
 
 
-class ServiceTests(AsyncCase):
-    async def asyncSetUp(self):
-        await super().asyncSetUp()
-        self.hass = Hass()
-        self.addCleanup(self.hass.executor.shutdown)
-        self.entry = ConfigEntry()
-        await integration.async_setup_entry(self.hass, self.entry)
-        self.sensor = self.entry.runtime_data.sensor_entity
-        self.temp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.temp.cleanup)
-        self.directory = self.temp.name
+def data(tmp_path, **kwargs):
+    return {"directory": str(tmp_path), "filename": "upload", **kwargs}
 
-    def data(self, **kwargs):
-        data = {"directory": self.directory, "filename": "upload"}
-        data.update(kwargs)
-        return data
 
-    async def test_atomic_namespaced_results_and_diagnostics_reset(self):
-        path = Path(self.directory) / "upload.jpg"
-        path.write_bytes(b"complete")
-        with self.assertLogs(integration.__name__, "ERROR"):
-            await self.hass.services.call(self.data(min_size="broken"))
-        bad = self.sensor._attr_extra_state_attributes["default"]
-        self.assertEqual(bad["FetchStatus"]["status"], "error")
-        self.assertNotIn("Overall", bad)
-        await self.hass.services.call(self.data())
-        result = self.sensor._attr_extra_state_attributes["default"]
-        self.assertEqual(result["Overall"], str(path))
-        self.assertEqual(result["jpg"], str(path))
-        self.assertEqual(result["FetchStatus"], {"status": "ok", "reasons": {}})
-        self.assertNotIn("error", result)
-        self.assertEqual(self.sensor.writes, 2)
-        self.assertEqual(self.sensor._attr_native_value, result["timestamp"])
+async def call(hass, tmp_path, response=True, **kwargs):
+    return await hass.services.async_call(
+        DOMAIN,
+        "fetch",
+        data(tmp_path, **kwargs),
+        blocking=True,
+        return_response=response,
+    )
 
-    async def test_search_validation_replaces_old_paths_with_error(self):
-        path = Path(self.directory) / "upload.jpg"
-        path.write_bytes(b"complete")
-        await self.hass.services.call(self.data())
-        with self.assertLogs(integration.__name__, "ERROR"):
-            await self.hass.services.call(self.data(filename="../upload"))
-        result = self.sensor._attr_extra_state_attributes["default"]
-        self.assertEqual(result["FetchStatus"]["status"], "error")
-        self.assertNotIn("Overall", result)
-        self.assertEqual(self.entry.runtime_data.active_fetches, set())
 
-    async def test_no_match_publishes_without_raising_and_warning_is_visible(self):
-        with self.assertLogs(integration.__name__, "WARNING") as logs:
-            await self.hass.services.call(self.data(wait_for_upload=True, timeout=.02, quiet_period=10))
-        self.assertTrue(any("Degraded fetch result" in message for message in logs.output))
-        result = self.sensor._attr_extra_state_attributes["default"]
-        self.assertEqual(result["status"], "No matching files")
-        self.assertEqual(result["FetchStatus"]["status"], "no_match")
+async def test_setup_response_and_sensor(hass, entry, tmp_path):
+    path = tmp_path / "upload.jpg"
+    path.write_bytes(b"complete")
+    response = await call(hass, tmp_path)
+    assert response["target_id"] == "default"
+    assert response["result"]["Overall"] == str(path)
+    assert isinstance(response["result"]["timestamp"], str)
+    runtime = entry.runtime_data
+    assert runtime.last_fetch == runtime.targets["default"]["timestamp"]
+    assert not isinstance(runtime.targets["default"]["timestamp"], str)
+    state = hass.states.get(runtime.sensor_entity.entity_id)
+    assert state.attributes["default"]["Overall"] == str(path)
+    assert await call(hass, tmp_path, response=False) is None
+    assert runtime.locks == {}
 
-    async def test_same_target_serialized_different_targets_run_concurrently(self):
-        entered = []
-        release = asyncio.Event()
-        async def fetch(hass, criteria, **kwargs):
-            entered.append(criteria.filename_prefix)
-            await release.wait()
-            return [MatchedFile(1, "/upload.jpg", "jpg")], {"status": "ok", "reasons": {}}
-        with patch.object(integration, "async_fetch_files", fetch):
-            first = asyncio.create_task(self.hass.services.call(self.data(filename="first", target_id="same")))
-            second = asyncio.create_task(self.hass.services.call(self.data(filename="second", target_id="same")))
-            different = asyncio.create_task(self.hass.services.call(self.data(filename="different", target_id="other")))
-            await asyncio.sleep(.03)
-            self.assertEqual(entered, ["first", "different"])
-            release.set()
-            await asyncio.gather(first, second, different)
-        self.assertEqual(entered, ["first", "different", "second"])
-        self.assertEqual(set(self.sensor._attr_extra_state_attributes), {"same", "other"})
 
-    async def test_unload_cancels_active_and_queued_calls_and_awaits_cleanup(self):
-        entered, cleaned = asyncio.Event(), asyncio.Event()
-        async def fetch(hass, criteria, **kwargs):
-            entered.set()
-            try:
-                await asyncio.Event().wait()
-            finally:
-                await asyncio.sleep(.02)
-                cleaned.set()
-        with patch.object(integration, "async_fetch_files", fetch):
-            first = asyncio.create_task(self.hass.services.call(self.data()))
-            await entered.wait()
-            queued = asyncio.create_task(self.hass.services.call(self.data()))
-            await asyncio.sleep(.02)
-            self.assertEqual(len(self.entry.runtime_data.active_fetches), 2)
-            self.assertTrue(await integration.async_unload_entry(self.hass, self.entry))
-            self.assertTrue(cleaned.is_set())
-            for task in (first, queued):
-                with self.assertRaises(asyncio.CancelledError):
-                    await task
-        self.assertEqual(self.entry.runtime_data.active_fetches, set())
-        self.assertIsNone(self.entry.runtime_data.sensor_entity)
-        self.assertFalse(self.hass.services.has_service("fetch_latest_file", "fetch"))
+async def test_persistent_action_before_setup_and_after_unload(hass, tmp_path):
+    assert await async_setup_component(hass, DOMAIN, {})
+    assert hass.services.has_service(DOMAIN, "fetch")
+    with pytest.raises(HomeAssistantError) as caught:
+        await call(hass, tmp_path)
+    assert caught.value.translation_key == "unavailable"
+    entry = MockConfigEntry(domain=DOMAIN, unique_id=DOMAIN, data={})
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    assert await hass.config_entries.async_unload(entry.entry_id)
+    assert hass.services.has_service(DOMAIN, "fetch")
+    with pytest.raises(HomeAssistantError) as caught:
+        await call(hass, tmp_path)
+    assert caught.value.translation_key == "unavailable"
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    assert (await call(hass, tmp_path))["result"]["FetchStatus"]["status"] == "no_match"
 
-    async def test_failed_unload_restores_service_availability(self):
-        async def fail(entry, platforms):
-            return False
-        self.hass.config_entries.async_unload_platforms = fail
-        with self.assertLogs(integration.__name__, "ERROR"):
-            self.assertFalse(await integration.async_unload_entry(self.hass, self.entry))
-        self.assertFalse(self.entry.runtime_data.unloading)
-        self.assertIs(self.entry.runtime_data.sensor_entity, self.sensor)
-        self.assertTrue(self.hass.services.has_service("fetch_latest_file", "fetch"))
+
+@pytest.mark.parametrize(
+    ("kwargs", "key"),
+    [
+        ({"min_size": "broken"}, "invalid_size"),
+        ({"filename": "../upload"}, "invalid_search"),
+    ],
+)
+async def test_translated_validation_clears_stale_paths(
+    hass, entry, tmp_path, kwargs, key
+):
+    (tmp_path / "upload.jpg").write_bytes(b"complete")
+    await call(hass, tmp_path)
+    with pytest.raises(ServiceValidationError) as caught:
+        await call(hass, tmp_path, **kwargs)
+    assert caught.value.translation_key == key
+    result = entry.runtime_data.targets["default"]
+    assert "Overall" not in result
+    assert result["FetchStatus"]["status"] == "error"
+    await call(hass, tmp_path)
+    assert entry.runtime_data.targets["default"]["FetchStatus"]["status"] == "ok"
+
+
+async def test_translated_filesystem_error(hass, entry, tmp_path):
+    with patch.object(integration, "async_fetch_files", side_effect=OSError("denied")):
+        with pytest.raises(HomeAssistantError) as caught:
+            await call(hass, tmp_path)
+    assert caught.value.translation_key == "filesystem_error"
+    assert caught.value.translation_placeholders["directory"] == str(tmp_path)
+    assert entry.runtime_data.targets["default"]["FetchStatus"]["status"] == "error"
+
+
+async def test_disabled_sensor_still_returns_then_enabled_publishes(hass, tmp_path):
+    entry = MockConfigEntry(domain=DOMAIN, unique_id=DOMAIN, data={})
+    entry.add_to_hass(hass)
+    registry = er.async_get(hass)
+    entity = registry.async_get_or_create(
+        "sensor",
+        DOMAIN,
+        f"{entry.entry_id}_latest_file",
+        config_entry=entry,
+        disabled_by=er.RegistryEntryDisabler.USER,
+    )
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    assert entry.runtime_data.sensor_entity is None
+    (tmp_path / "upload.jpg").write_bytes(b"complete")
+    assert (await call(hass, tmp_path))["result"]["Overall"].endswith("upload.jpg")
+    registry.async_update_entity(entity.entity_id, disabled_by=None)
+    assert await hass.config_entries.async_reload(entry.entry_id)
+    await hass.async_block_till_done()
+    assert entry.runtime_data.sensor_entity is not None
+    await call(hass, tmp_path)
+    assert (
+        hass.states.get(entity.entity_id)
+        .attributes["default"]["jpg"]
+        .endswith("upload.jpg")
+    )
+
+
+async def test_target_serialization_parallelism_and_bounded_locks(
+    hass, entry, tmp_path
+):
+    entered = []
+    release = asyncio.Event()
+
+    async def fetch(hass, criteria, **kwargs):
+        entered.append(criteria.filename_prefix)
+        await release.wait()
+        return [MatchedFile(1, "/upload.jpg", "jpg")], {"status": "ok", "reasons": {}}
+
+    with patch.object(integration, "async_fetch_files", fetch):
+        tasks = [
+            asyncio.create_task(call(hass, tmp_path, filename=name, target_id=target))
+            for name, target in [
+                ("first", "same"),
+                ("second", "same"),
+                ("other", "other"),
+            ]
+        ]
+        await asyncio.sleep(0.03)
+        assert entered == ["first", "other"]
+        assert entry.runtime_data.locks["same"].references == 2
+        release.set()
+        await asyncio.gather(*tasks)
+    assert entered == ["first", "other", "second"]
+    assert entry.runtime_data.locks == {}
+    assert entry.runtime_data.active_fetches == set()
+
+
+async def test_unload_cancels_active_queued_calls(hass, entry, tmp_path):
+    entered, cleaned = asyncio.Event(), asyncio.Event()
+
+    async def fetch(hass, criteria, **kwargs):
+        entered.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            await asyncio.sleep(0.02)
+            cleaned.set()
+
+    runtime = entry.runtime_data
+    with patch.object(integration, "async_fetch_files", fetch):
+        first = asyncio.create_task(call(hass, tmp_path))
+        await entered.wait()
+        queued = asyncio.create_task(call(hass, tmp_path))
+        await asyncio.sleep(0.02)
+        assert await hass.config_entries.async_unload(entry.entry_id)
+        assert cleaned.is_set()
+        for task in [first, queued]:
+            with pytest.raises(asyncio.CancelledError):
+                await task
+    assert runtime.active_fetches == set()
+    assert runtime.locks == {}
+    assert runtime.sensor_entity is None
+    assert runtime.expiry_task is None
+
+
+async def test_expiry_removes_targets_keeps_timestamp(hass, entry, tmp_path):
+    await call(hass, tmp_path)
+    runtime = entry.runtime_data
+    original = runtime.last_fetch
+    with patch(
+        "custom_components.fetch_latest_file.runtime.dt_util.utcnow",
+        return_value=dt_util.utcnow() + timedelta(hours=25),
+    ):
+        assert runtime.cleanup()
+        runtime.refresh_sensor()
+    assert runtime.targets == {}
+    assert runtime.last_fetch == original
+    assert (
+        hass.states.get(runtime.sensor_entity.entity_id).state
+        == dt_util.as_utc(original).isoformat()
+    )
+
+
+async def test_schema_defaults_and_positive_durations():
+    normalized = integration.SERVICE_FETCH_SCHEMA({"directory": "/tmp", "filename": ""})
+    assert normalized["min_size"] == "0B"
+    assert normalized["wait_for_upload"] is False
+    assert normalized["timeout"] == 30
+    assert normalized["quiet_period"] == 2
+    for field in ["MinSize", "minsize", "timeout", "quiet_period"]:
+        for value in (
+            ["1M"]
+            if field.startswith("Min") or field == "minsize"
+            else [0, -1, "nan", "inf"]
+        ):
+            with pytest.raises(vol.Invalid):
+                integration.SERVICE_FETCH_SCHEMA(
+                    {"directory": "/tmp", "filename": "", field: value}
+                )
+
+
+async def test_user_and_options_flows_reload(hass):
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN, context={"source": "user"}
+    )
+    assert result["type"] == "form"
+    result = await hass.config_entries.flow.async_configure(result["flow_id"], {})
+    assert result["type"] == "create_entry"
+    await hass.async_block_till_done()
+    entry = result["result"]
+    runtime = entry.runtime_data
+    duplicate = await hass.config_entries.flow.async_init(
+        DOMAIN, context={"source": "user"}
+    )
+    assert duplicate["type"] == "abort"
+    assert duplicate["reason"] == "single_instance_allowed"
+    options = await hass.config_entries.options.async_init(entry.entry_id)
+    assert options["type"] == "form"
+    updated = await hass.config_entries.options.async_configure(
+        options["flow_id"],
+        {
+            "allowed_directories": "/tmp",
+            "max_scan_depth": 2,
+            "max_files_to_check": 50,
+            "max_target_ids": 3,
+            "target_expiry_hours": 1,
+        },
+    )
+    assert updated["type"] == "create_entry"
+    await hass.async_block_till_done()
+    assert entry.options["allowed_directories"] == ["/tmp"]
+    assert entry.options["max_scan_depth"] == 2
+    assert entry.runtime_data is not runtime
+    assert runtime.unloading
+
+
+async def test_minute_expiry_without_new_fetch(hass, entry, tmp_path):
+    from pytest_homeassistant_custom_component.common import async_fire_time_changed
+
+    await call(hass, tmp_path)
+    runtime = entry.runtime_data
+    original = runtime.last_fetch
+    runtime.targets["default"]["timestamp"] = dt_util.now() - timedelta(hours=25)
+    await asyncio.sleep(0)
+    async_fire_time_changed(hass, dt_util.utcnow() + timedelta(seconds=61))
+    await hass.async_block_till_done()
+    assert runtime.targets == {}
+    assert runtime.last_fetch == original
+    assert (
+        hass.states.get(runtime.sensor_entity.entity_id).state
+        == dt_util.as_utc(original).isoformat()
+    )
+
+
+@pytest.mark.parametrize(
+    "options",
+    [
+        {"max_scan_depth": 1.5},
+        {"max_scan_depth": True},
+        {"max_scan_depth": -1},
+        {"max_files_to_check": 0},
+        {"max_target_ids": 101},
+        {"target_expiry_hours": 169},
+        {"allowed_directories": ["/does-not-exist-fetch-latest-tests"]},
+    ],
+)
+async def test_invalid_stored_options_fail_setup(hass, options):
+    from homeassistant.config_entries import ConfigEntryState
+
+    entry = MockConfigEntry(domain=DOMAIN, unique_id=DOMAIN, data={}, options=options)
+    entry.add_to_hass(hass)
+    assert not await hass.config_entries.async_setup(entry.entry_id)
+    assert entry.state is ConfigEntryState.SETUP_ERROR
+    assert DOMAIN not in hass.data
+    assert hass.services.has_service(DOMAIN, "fetch")
+
+
+async def test_legacy_integer_options_normalize_on_setup(hass):
+    entry = MockConfigEntry(
+        domain=DOMAIN, unique_id=DOMAIN, data={}, options={"max_scan_depth": "2"}
+    )
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    assert entry.runtime_data.options["max_scan_depth"] == 2
+
+
+async def test_invalid_options_form_preserves_values(hass, entry, tmp_path):
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        {
+            "allowed_directories": str(tmp_path / "missing"),
+            "max_scan_depth": 2,
+            "max_files_to_check": 50,
+            "max_target_ids": 3,
+            "target_expiry_hours": 1,
+        },
+    )
+    assert result["type"] == "form"
+    assert result["errors"] == {"base": "invalid_options"}
+    assert "missing" in result["description_placeholders"]["error"]
+    assert entry.options == {}
+
+
+async def test_response_diagnostics_are_isolated_from_runtime_and_sensor(
+    hass, entry, tmp_path
+):
+    (tmp_path / "upload-old.jpg").write_bytes(b"large enough")
+    old = tmp_path / "upload-old.jpg"
+    os.utime(old, (10, 10))
+    (tmp_path / "upload-new.jpg").write_bytes(b"x")
+    response = await call(hass, tmp_path, min_size="5B")
+    diagnostics = response["result"]["FetchStatus"]
+    assert diagnostics["reasons"]["jpg"] == ["minimum_size"]
+    diagnostics["reasons"]["jpg"].append("completion_unverified")
+    diagnostics["reasons"]["Overall"] = ["upload_timeout"]
+    diagnostics["status"] = "error"
+    response["result"]["Overall"] = "mutated"
+    expected = {
+        "status": "fallback",
+        "reasons": {"jpg": ["minimum_size"], "Overall": ["minimum_size"]},
+    }
+    assert entry.runtime_data.targets["default"]["FetchStatus"] == expected
+    assert entry.runtime_data.targets["default"]["Overall"] == str(old)
+    state = hass.states.get(entry.runtime_data.sensor_entity.entity_id)
+    assert state.attributes["default"]["FetchStatus"] == expected
+    assert state.attributes["default"]["Overall"] == str(old)
+
+
+async def test_candidate_permission_failure_clears_paths_and_raises_translated_error(
+    hass, entry, tmp_path
+):
+    path = tmp_path / "upload.jpg"
+    path.write_bytes(b"complete")
+    await call(hass, tmp_path)
+    stat = os.stat
+
+    def denied_stat(candidate, *args, **kwargs):
+        if os.fspath(candidate) == str(path) and kwargs.get("follow_symlinks") is False:
+            raise PermissionError("candidate stat denied")
+        return stat(candidate, *args, **kwargs)
+
+    with patch("custom_components.fetch_latest_file.scanner.os.stat", denied_stat):
+        with pytest.raises(HomeAssistantError) as caught:
+            await call(hass, tmp_path)
+    assert caught.value.translation_key == "filesystem_error"
+    assert "candidate stat denied" in caught.value.translation_placeholders["error"]
+    result = entry.runtime_data.targets["default"]
+    assert "Overall" not in result
+    assert "jpg" not in result
+    assert result["FetchStatus"] == {
+        "status": "error",
+        "reasons": {"Overall": ["os_error"]},
+    }
+
+
+@pytest.mark.parametrize("denied", ["file", "directory"])
+async def test_permission_failure_during_resolution_is_filesystem_error(
+    hass, entry, tmp_path, denied
+):
+    from pathlib import Path
+
+    child = tmp_path / "child"
+    child.mkdir()
+    path = child / "upload.jpg"
+    path.write_bytes(b"complete")
+    await call(hass, tmp_path)
+    resolve = Path.resolve
+    target = path if denied == "file" else child
+
+    def denied_resolve(candidate, *args, **kwargs):
+        if candidate == target:
+            raise PermissionError("path resolve denied")
+        return resolve(candidate, *args, **kwargs)
+
+    with patch.object(Path, "resolve", denied_resolve):
+        with pytest.raises(HomeAssistantError) as caught:
+            await call(hass, tmp_path)
+    assert caught.value.translation_key == "filesystem_error"
+    assert "Overall" not in entry.runtime_data.targets["default"]

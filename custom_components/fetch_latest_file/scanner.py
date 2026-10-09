@@ -1,15 +1,25 @@
 """File scanning helpers for Fetch Latest File."""
+
 from __future__ import annotations
 
-from dataclasses import dataclass
+import errno
 import logging
 import os
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 _LOGGER = logging.getLogger(__name__)
 
-RESERVED_RESULT_KEYS = {"Overall", "timestamp", "status", "error", "error_details", "default", "FetchStatus"}
+RESERVED_RESULT_KEYS = {
+    "Overall",
+    "timestamp",
+    "status",
+    "error",
+    "error_details",
+    "default",
+    "FetchStatus",
+}
 SIZE_MULTIPLIERS = {"B": 1, "K": 1024, "M": 1024**2, "G": 1024**3}
 
 
@@ -89,7 +99,7 @@ def parse_min_size(min_size_str: str) -> int:
     value_str = min_size_str_upper
 
     if unit != "B":
-        value_str = value_str[:-len(unit)]
+        value_str = value_str[: -len(unit)]
     else:
         value_str = value_str.rstrip("B")
 
@@ -110,23 +120,41 @@ class ScanResult:
     files: list[MatchedFile]
     undersized: list[MatchedFile]
     directories: list[str]
+    scan_limit_reached: bool = False
 
 
 def result_key(extension: str) -> str:
-    """Protect sensor metadata from extension-name collisions."""
-    key = extension or "no_extension"
-    if key.lower() in {reserved.lower() for reserved in RESERVED_RESULT_KEYS}:
-        return f"ext_{key}"
-    return key
+    """Map extensions injectively while protecting metadata keys."""
+    if not extension:
+        return "no_extension"
+    if (
+        extension.lower() in {key.lower() for key in RESERVED_RESULT_KEYS}
+        or extension == "no_extension"
+        or extension.startswith("ext_")
+    ):
+        return f"ext_{extension}"
+    return extension
+
+
+def newest_files(files: list[MatchedFile]) -> dict[str, MatchedFile]:
+    """Index newest files per result key in one pass."""
+    selected: dict[str, MatchedFile] = {}
+    for match in files:
+        key = result_key(match.extension)
+        if key not in selected or match.modified > selected[key].modified:
+            selected[key] = match
+    return selected
 
 
 def build_file_results(found_files: list[MatchedFile]) -> dict[str, str]:
-    """Build sensor file result attributes from matched files."""
-    sorted_files = sorted(found_files, key=lambda match: match.modified, reverse=True)
-    file_results = {"Overall": sorted_files[0].path}
-    for matched_file in sorted_files:
-        file_results.setdefault(result_key(matched_file.extension), matched_file.path)
-    return file_results
+    """Build sensor results in linear time."""
+    if not found_files:
+        return {}
+    selected = newest_files(found_files)
+    return {
+        "Overall": max(found_files, key=lambda match: match.modified).path,
+        **{key: match.path for key, match in selected.items()},
+    }
 
 
 def search_files(criteria: SearchCriteria) -> list[MatchedFile]:
@@ -134,23 +162,32 @@ def search_files(criteria: SearchCriteria) -> list[MatchedFile]:
     return scan_files(criteria).files
 
 
-def scan_files(criteria: SearchCriteria) -> ScanResult:
-    """Scan with the same security and resource limits used by notifications."""
+def _traverse(criteria: SearchCriteria, *, collect_files: bool) -> ScanResult:
+    """Share validated, bounded traversal for discovery and watch registration."""
     base_path = _resolve_base_directory(criteria.directory)
     _validate_allowed_directory(base_path, criteria.allowed_directories)
     _validate_filename_prefix(criteria.filename_prefix)
     result = ScanResult([], [], [])
     file_count = 0
-    for dirpath, dirnames, filenames in os.walk(base_path, followlinks=False):
+
+    def walk_error(error: OSError) -> None:
+        raise error
+
+    for dirpath, dirnames, filenames in os.walk(
+        base_path, followlinks=False, onerror=walk_error
+    ):
         current = Path(dirpath)
         depth = _directory_depth(base_path, current)
-        if (depth is None or depth > criteria.max_depth or current.is_symlink()
-                or not _is_resolved_child(base_path, current)):
+        if (
+            depth is None
+            or depth > criteria.max_depth
+            or current.is_symlink()
+            or not _is_resolved_child(base_path, current)
+        ):
             dirnames.clear()
             continue
-        # Bound empty-directory traversal and the number of nonrecursive watches too.
         if len(result.directories) >= criteria.max_files_to_check:
-            _LOGGER.warning("Reached directory check limit (%d)", criteria.max_files_to_check)
+            result.scan_limit_reached = True
             break
         result.directories.append(str(current))
         dirnames[:] = [name for name in dirnames if not (current / name).is_symlink()]
@@ -159,40 +196,46 @@ def scan_files(criteria: SearchCriteria) -> ScanResult:
         for filename in filenames:
             file_count += 1
             if file_count > criteria.max_files_to_check:
-                _LOGGER.warning("Reached maximum file check limit (%d)", criteria.max_files_to_check)
+                result.scan_limit_reached = True
                 return result
-            if not filename.lower().startswith(criteria.filename_prefix.lower()):
+            if not collect_files or not filename.lower().startswith(
+                criteria.filename_prefix.lower()
+            ):
                 continue
             match = _match_file(base_path, current / filename, criteria.extensions, 0)
             if match is not None:
-                (result.files if match.size >= criteria.min_size else result.undersized).append(match)
+                (
+                    result.files
+                    if match.size >= criteria.min_size
+                    else result.undersized
+                ).append(match)
     return result
 
 
+def scan_files(criteria: SearchCriteria) -> ScanResult:
+    """Scan files using validated security and resource limits."""
+    return _traverse(criteria, collect_files=True)
+
+
 def watch_directories(criteria: SearchCriteria) -> list[str]:
-    """Validate and enumerate directories before the first candidate scan."""
-    base_path = _resolve_base_directory(criteria.directory)
-    _validate_allowed_directory(base_path, criteria.allowed_directories)
-    _validate_filename_prefix(criteria.filename_prefix)
-    directories: list[str] = []
-    file_count = 0
-    for dirpath, dirnames, filenames in os.walk(base_path, followlinks=False):
-        current = Path(dirpath)
-        depth = _directory_depth(base_path, current)
-        if (depth is None or depth > criteria.max_depth or current.is_symlink()
-                or not _is_resolved_child(base_path, current)):
-            dirnames.clear()
+    """Enumerate validated watches before the first candidate scan."""
+    return _traverse(criteria, collect_files=False).directories
+
+
+def refresh_files(criteria: SearchCriteria, scan: ScanResult) -> ScanResult:
+    """Revalidate known candidates without repeating directory discovery."""
+    base = _resolve_base_directory(criteria.directory)
+    result = ScanResult([], [], scan.directories, scan.scan_limit_reached)
+    for previous in (*scan.files, *scan.undersized):
+        path = Path(previous.path)
+        if not _is_resolved_child(base, path.parent) or path.parent.is_symlink():
             continue
-        if len(directories) >= criteria.max_files_to_check:
-            break
-        directories.append(str(current))
-        dirnames[:] = [name for name in dirnames if not (current / name).is_symlink()]
-        if depth == criteria.max_depth:
-            dirnames.clear()
-        file_count += len(filenames)
-        if file_count >= criteria.max_files_to_check:
-            break
-    return directories
+        match = _match_file(base, path, criteria.extensions, 0)
+        if match is not None:
+            (
+                result.files if match.size >= criteria.min_size else result.undersized
+            ).append(match)
+    return result
 
 
 def _resolve_base_directory(directory: str) -> Path:
@@ -200,7 +243,9 @@ def _resolve_base_directory(directory: str) -> Path:
     try:
         base_path = Path(directory).expanduser().resolve(strict=True)
     except (OSError, RuntimeError) as err:
-        raise FileSearchError(f"Cannot resolve directory path: {directory}, Error: {err}") from err
+        raise FileSearchError(
+            f"Cannot resolve directory path: {directory}, Error: {err}"
+        ) from err
 
     if not base_path.is_dir():
         raise FileSearchError(f"Invalid or inaccessible directory: {directory}")
@@ -211,7 +256,9 @@ def _resolve_base_directory(directory: str) -> Path:
     return base_path
 
 
-def _validate_allowed_directory(base_path: Path, allowed_directories: list[str]) -> None:
+def _validate_allowed_directory(
+    base_path: Path, allowed_directories: list[str]
+) -> None:
     """Validate that the search directory is inside an allowed directory."""
     allowed_paths = _resolve_allowed_directories(allowed_directories)
     if not allowed_paths:
@@ -233,7 +280,9 @@ def _resolve_allowed_directories(allowed_directories: list[str]) -> list[Path]:
         try:
             allowed_path = Path(directory).expanduser().resolve(strict=True)
         except (OSError, RuntimeError) as err:
-            raise FileSearchError(f"Cannot resolve allowed directory: {directory}, Error: {err}") from err
+            raise FileSearchError(
+                f"Cannot resolve allowed directory: {directory}, Error: {err}"
+            ) from err
 
         if not allowed_path.is_dir():
             raise FileSearchError(f"Allowed path is not a directory: {allowed_path}")
@@ -265,7 +314,13 @@ def _is_resolved_child(base_path: Path, path: Path) -> bool:
     """Return whether a resolved path is within the resolved base path."""
     try:
         resolved_path = path.resolve(strict=True)
-    except (OSError, RuntimeError):
+    except (OSError, RuntimeError) as err:
+        if (
+            isinstance(err, OSError)
+            and not isinstance(err, (FileNotFoundError, NotADirectoryError))
+            and err.errno != errno.ELOOP
+        ):
+            raise
         _LOGGER.warning("Could not resolve path: %s", path)
         return False
 
@@ -281,7 +336,13 @@ def _match_file(
     """Return a matched file if it passes security, extension, and size checks."""
     try:
         real_file_path = file_path.resolve(strict=True)
-    except (OSError, RuntimeError):
+    except (OSError, RuntimeError) as err:
+        if (
+            isinstance(err, OSError)
+            and not isinstance(err, (FileNotFoundError, NotADirectoryError))
+            and err.errno != errno.ELOOP
+        ):
+            raise
         _LOGGER.warning("Could not resolve file path: %s", file_path)
         return None
 
@@ -291,11 +352,8 @@ def _match_file(
 
     try:
         stats = os.stat(file_path, follow_symlinks=False)
-    except FileNotFoundError:
+    except FileNotFoundError, NotADirectoryError:
         _LOGGER.warning("File vanished during scan: %s", file_path)
-        return None
-    except OSError as err:
-        _LOGGER.warning("OS error accessing stats for %s: %s", file_path, err)
         return None
 
     if file_path.is_symlink():

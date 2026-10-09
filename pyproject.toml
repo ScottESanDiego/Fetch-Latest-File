@@ -1,0 +1,32 @@
+[project]
+name = "fetch-latest-file"
+version = "4.2.0"
+description = "Fetch the latest matching files for Home Assistant"
+requires-python = ">=3.14.2"
+dependencies = ["asyncinotify==4.4.4"]
+
+[dependency-groups]
+dev = [
+  "homeassistant==2026.10.0",
+  "pytest-homeassistant-custom-component==0.13.371",
+  "pytest==9.0.3",
+  "pytest-asyncio==1.4.0",
+  "probatio==0.13.0",
+  "ruff==0.17.0",
+  "PyYAML==6.0.3",
+]
+
+[tool.uv]
+package = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+asyncio_default_test_loop_scope = "function"
+
+[tool.ruff]
+target-version = "py314"
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I"]

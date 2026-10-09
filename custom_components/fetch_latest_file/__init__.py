@@ -1,21 +1,29 @@
 """The Fetch Latest File integration."""
+
 from __future__ import annotations
 
-import asyncio
-from collections.abc import Mapping
-from dataclasses import dataclass, field
-from datetime import datetime
 import logging
 import math
 import re
-from typing import TYPE_CHECKING, Any
+from datetime import datetime
+from typing import cast
 
-import voluptuous as vol
-
+import probatio as vol
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
-from homeassistant.core import HomeAssistant, ServiceCall
+from homeassistant.core import (
+    HomeAssistant,
+    ServiceCall,
+    ServiceResponse,
+    SupportsResponse,
+)
+from homeassistant.exceptions import (
+    ConfigEntryError,
+    HomeAssistantError,
+    ServiceValidationError,
+)
 from homeassistant.helpers import config_validation as cv
+from homeassistant.helpers.typing import ConfigType
 from homeassistant.util import dt as dt_util
 
 from .const import (
@@ -27,6 +35,12 @@ from .const import (
     DEFAULT_MAX_SCAN_DEPTH,
     DOMAIN,
 )
+from .runtime import (
+    FetchLatestFileRuntimeData,
+    int_option,
+    validate_allowed_roots,
+    validate_options,
+)
 from .scanner import (
     FileSearchError,
     SearchCriteria,
@@ -35,11 +49,8 @@ from .scanner import (
     normalize_extensions,
     parse_min_size,
 )
-
+from .types import FetchResponse, ReasonCode, ResponseResult, TargetResult
 from .upload_wait import async_fetch_files
-
-if TYPE_CHECKING:
-    from .sensor import FetchLatestFileSensor
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -48,15 +59,6 @@ SERVICE_FETCH = "fetch"
 
 DEFAULT_TARGET_ID = "default"
 TARGET_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
-
-
-@dataclass
-class FetchLatestFileRuntimeData:
-    """Runtime data for Fetch Latest File."""
-
-    sensor_entity: FetchLatestFileSensor | None = None
-    active_fetches: set[asyncio.Task] = field(default_factory=set)
-    unloading: bool = False
 
 
 type FetchLatestFileConfigEntry = ConfigEntry[FetchLatestFileRuntimeData]
@@ -88,187 +90,215 @@ def _positive_seconds(value: object) -> float:
     return seconds
 
 
-def _int_option(options: Mapping[str, object], key: str, default: int) -> int:
-    """Return an integer option value with a safe fallback."""
-    value = options.get(key, default)
-    if isinstance(value, int):
-        return value
-    if isinstance(value, str):
-        try:
-            return int(value)
-        except ValueError:
-            return default
-
-    return default
-
-
 # Service schema for validation
-SERVICE_FETCH_SCHEMA = vol.Schema({
-    vol.Required("directory"): cv.string,
-    vol.Required("filename"): cv.string,
-    vol.Optional("extension"): vol.Any(cv.string, [cv.string]),
-    vol.Optional("min_size", default="0B"): cv.string,
-    vol.Optional("wait_for_upload", default=False): cv.boolean,
-    vol.Optional("timeout", default=30): _positive_seconds,
-    vol.Optional("quiet_period", default=2): _positive_seconds,
-    vol.Optional("target_id", default=DEFAULT_TARGET_ID): vol.All(
-        cv.string,
-        _validate_target_id,
-    ),
-})
+SERVICE_FETCH_SCHEMA = vol.Schema(
+    {
+        vol.Required("directory"): cv.string,
+        vol.Required("filename"): cv.string,
+        vol.Optional("extension"): vol.Any(cv.string, [cv.string]),
+        vol.Optional("min_size", default="0B"): cv.string,
+        vol.Optional("wait_for_upload", default=False): cv.boolean,
+        vol.Optional("timeout", default=30): _positive_seconds,
+        vol.Optional("quiet_period", default=2): _positive_seconds,
+        vol.Optional("target_id", default=DEFAULT_TARGET_ID): vol.All(
+            cv.string,
+            _validate_target_id,
+        ),
+    }
+)
 
-async def async_setup_entry(hass: HomeAssistant, entry: FetchLatestFileConfigEntry) -> bool:
-    """Set up FetchLatestFile from a config entry."""
-    _LOGGER.info("Setting up FetchLatestFile integration entry_id: %s", entry.entry_id)
 
-    entry.runtime_data = FetchLatestFileRuntimeData()
+def _response_value(result: TargetResult) -> ResponseResult:
+    """Return an independent snapshot with a serialized native timestamp."""
+    status = result["FetchStatus"]
+    return cast(
+        ResponseResult,
+        {
+            **result,
+            "timestamp": result["timestamp"].isoformat(),
+            "FetchStatus": {
+                "status": status["status"],
+                "reasons": {
+                    key: list(reasons) for key, reasons in status["reasons"].items()
+                },
+            },
+        },
+    )
 
-    await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
-    async def handle_fetch(call: ServiceCall) -> None:
-        """Track queued and active calls so unload can await their cleanup."""
-        runtime = entry.runtime_data
-        if runtime.unloading:
-            return
-        task = asyncio.current_task()
-        if task is not None:
-            runtime.active_fetches.add(task)
-        try:
-            await process_fetch(call)
-        finally:
-            if task is not None:
-                runtime.active_fetches.discard(task)
+def _publish_error(
+    runtime: FetchLatestFileRuntimeData,
+    target_id: str,
+    reason: ReasonCode,
+    title: str,
+    details: str,
+) -> None:
+    """Clear previous paths before surfacing an action error."""
+    runtime.publish(
+        target_id,
+        {
+            "timestamp": _timestamp(),
+            "FetchStatus": {"status": "error", "reasons": {"Overall": [reason]}},
+            "error": title,
+            "error_details": details,
+        },
+    )
 
-    async def process_fetch(call: ServiceCall) -> None:
-        """Handle the service call to fetch the latest file(s) and update the sensor."""
-        _LOGGER.debug("Service fetch_latest_file.fetch called with data: %s", call.data)
 
-        sensor_entity = entry.runtime_data.sensor_entity
-        if not sensor_entity:
-            _LOGGER.error("FetchLatestFile sensor entity not found. Cannot update state.")
-            return
+async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
+    """Register the persistent action without capturing a config entry."""
 
+    async def handle_fetch(call: ServiceCall) -> ServiceResponse:
+        runtime: FetchLatestFileRuntimeData | None = hass.data.get(DOMAIN)
+        if runtime is None or runtime.unloading:
+            raise HomeAssistantError(
+                translation_domain=DOMAIN, translation_key="unavailable"
+            )
         target_id: str = call.data["target_id"]
-
-        # Acquire lock based on target_id to allow parallel execution with different IDs
-        async with sensor_entity.get_lock(target_id):
+        async with runtime.operation(target_id):
+            if runtime.unloading:
+                raise HomeAssistantError(
+                    translation_domain=DOMAIN, translation_key="unavailable"
+                )
             directory: str = call.data["directory"]
-            file_name_prefix: str = call.data["filename"]
-            extensions = call.data.get("extension")
-            min_size_str: str = call.data.get("min_size", "0B")
-
+            min_size_str: str = call.data["min_size"]
             try:
                 min_size = parse_min_size(min_size_str)
-            except ValueError as e:
-                _LOGGER.error("Invalid 'min_size' input '%s': %s", min_size_str, e)
-                sensor_entity.update_target_data(target_id, {
-                    "FetchStatus": {"status": "error", "reasons": {"Overall": ["invalid_size"]}},
-                    "error": "Invalid Size",
-                    "error_details": f"Input: {min_size_str}, Error: {e}",
-                    "timestamp": _timestamp(),
-                })
-                return
+            except ValueError as err:
+                _publish_error(
+                    runtime, target_id, "invalid_size", "Invalid Size", str(err)
+                )
+                raise ServiceValidationError(
+                    translation_domain=DOMAIN,
+                    translation_key="invalid_size",
+                    translation_placeholders={
+                        "min_size": min_size_str,
+                        "error": str(err),
+                    },
+                ) from err
 
-            options = entry.options
+            options = runtime.options
             criteria = SearchCriteria(
                 directory=directory,
-                filename_prefix=file_name_prefix,
-                extensions=normalize_extensions(extensions),
+                filename_prefix=call.data["filename"],
+                extensions=normalize_extensions(call.data.get("extension")),
                 min_size=min_size,
                 allowed_directories=normalize_allowed_directories(
                     options.get(CONF_ALLOWED_DIRECTORIES, DEFAULT_ALLOWED_DIRECTORIES)
                 ),
-                max_depth=_int_option(options, CONF_MAX_SCAN_DEPTH, DEFAULT_MAX_SCAN_DEPTH),
-                max_files_to_check=_int_option(
-                    options,
-                    CONF_MAX_FILES_TO_CHECK,
-                    DEFAULT_MAX_FILES_TO_CHECK,
+                max_depth=int_option(
+                    options, CONF_MAX_SCAN_DEPTH, DEFAULT_MAX_SCAN_DEPTH
+                ),
+                max_files_to_check=int_option(
+                    options, CONF_MAX_FILES_TO_CHECK, DEFAULT_MAX_FILES_TO_CHECK
                 ),
             )
-
             try:
                 found_files, fetch_status = await async_fetch_files(
-                    hass, criteria,
-                    wait_for_upload=call.data.get("wait_for_upload", False),
-                    timeout=call.data.get("timeout", 30),
-                    quiet_period=call.data.get("quiet_period", 2),
+                    hass,
+                    criteria,
+                    wait_for_upload=call.data["wait_for_upload"],
+                    timeout=call.data["timeout"],
+                    quiet_period=call.data["quiet_period"],
                 )
-            except FileSearchError as e:
-                _LOGGER.error("File search validation error: %s", e)
-                sensor_entity.update_target_data(target_id, {
-                    "FetchStatus": {"status": "error", "reasons": {"Overall": ["invalid_search"]}},
-                    "error": "Invalid Search",
-                    "error_details": str(e),
-                    "timestamp": _timestamp(),
-                })
-                return
-            except OSError as e:
-                _LOGGER.error("OS error walking directory %s: %s", directory, e)
-                sensor_entity.update_target_data(target_id, {
-                    "FetchStatus": {"status": "error", "reasons": {"Overall": ["os_error"]}},
-                    "error": "OS Error Walking Dir",
-                    "error_details": f"Directory: {directory}, Error: {e}",
-                    "timestamp": _timestamp(),
-                })
-                return
-
+            except FileSearchError as err:
+                _publish_error(
+                    runtime, target_id, "invalid_search", "Invalid Search", str(err)
+                )
+                raise ServiceValidationError(
+                    translation_domain=DOMAIN,
+                    translation_key="invalid_search",
+                    translation_placeholders={"error": str(err)},
+                ) from err
+            except OSError as err:
+                _publish_error(
+                    runtime, target_id, "os_error", "OS Error Walking Dir", str(err)
+                )
+                raise HomeAssistantError(
+                    translation_domain=DOMAIN,
+                    translation_key="filesystem_error",
+                    translation_placeholders={
+                        "directory": directory,
+                        "error": str(err),
+                    },
+                ) from err
             if fetch_status["status"] != "ok":
-                _LOGGER.warning("Degraded fetch result for target '%s': %s", target_id, fetch_status)
-            if not found_files:
-                _LOGGER.info("No matching files found for the criteria.")
-                sensor_entity.update_target_data(target_id, {
-                    "FetchStatus": fetch_status,
-                    "status": "No matching files",
+                _LOGGER.warning(
+                    "Degraded fetch result for target '%s': %s", target_id, fetch_status
+                )
+            result: TargetResult = cast(
+                TargetResult,
+                {
+                    **build_file_results(found_files),
                     "timestamp": _timestamp(),
-                })
-                return
-
-            file_results: dict[str, Any] = build_file_results(found_files)
-            file_results["timestamp"] = _timestamp()
-            file_results["FetchStatus"] = fetch_status
-
-            # Update sensor entity with target_id namespaced results
-            sensor_entity.update_target_data(target_id, file_results)
-
-            _LOGGER.info(
-                "Fetch completed for target_id '%s'. Sensor '%s' updated.",
-                target_id,
-                sensor_entity.entity_id,
+                    "FetchStatus": fetch_status,
+                },
             )
-            _LOGGER.debug("Target '%s' results: %s", target_id, file_results)
+            if not found_files:
+                result["status"] = "No matching files"
+            runtime.publish(target_id, result)
+            if call.return_response:
+                response: FetchResponse = {
+                    "target_id": target_id,
+                    "result": _response_value(result),
+                }
+                return cast(ServiceResponse, response)
+            return None
 
-    # Register the service only once (check if it's already registered)
     if not hass.services.has_service(DOMAIN, SERVICE_FETCH):
         hass.services.async_register(
             DOMAIN,
             SERVICE_FETCH,
             handle_fetch,
             schema=SERVICE_FETCH_SCHEMA,
+            supports_response=SupportsResponse.OPTIONAL,
         )
-
     return True
 
 
-async def async_unload_entry(hass: HomeAssistant, entry: FetchLatestFileConfigEntry) -> bool:
-    """Unload a config entry."""
-    _LOGGER.info("Unloading FetchLatestFile integration...")
+async def async_setup_entry(
+    hass: HomeAssistant, entry: FetchLatestFileConfigEntry
+) -> bool:
+    """Create an entry-owned runtime and its publication platform."""
+    try:
+        options = validate_options(entry.options)
+        options = await hass.async_add_executor_job(validate_allowed_roots, options)
+    except vol.Invalid as err:
+        raise ConfigEntryError(
+            translation_domain=DOMAIN,
+            translation_key="invalid_options",
+            translation_placeholders={"error": str(err)},
+        ) from err
+    runtime = entry.runtime_data = FetchLatestFileRuntimeData(options=options)
+    hass.data[DOMAIN] = runtime
+    try:
+        await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    except BaseException:
+        await runtime.async_stop()
+        if hass.data.get(DOMAIN) is runtime:
+            hass.data.pop(DOMAIN)
+        raise
+    runtime.expiry_task = entry.async_create_background_task(
+        hass, runtime.async_expire(), "Fetch Latest File target expiry"
+    )
+    return True
 
+
+async def async_unload_entry(
+    hass: HomeAssistant, entry: FetchLatestFileConfigEntry
+) -> bool:
+    """Stop operations, then unload publication without removing the action."""
     runtime = entry.runtime_data
-    runtime.unloading = True
-    active = list(runtime.active_fetches)
-    for task in active:
-        task.cancel()
-    if active:
-        await asyncio.gather(*active, return_exceptions=True)
+    await runtime.async_stop()
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
-
     if unload_ok:
-        entry.runtime_data.sensor_entity = None
-        if not hass.config_entries.async_loaded_entries(DOMAIN):
-            hass.services.async_remove(DOMAIN, SERVICE_FETCH)
-        _LOGGER.info("FetchLatestFile integration successfully unloaded.")
+        runtime.sensor_entity = None
+        if hass.data.get(DOMAIN) is runtime:
+            hass.data.pop(DOMAIN)
     else:
         runtime.unloading = False
-        _LOGGER.error("Failed to unload one or more FetchLatestFile platforms.")
-
+        runtime.expiry_task = entry.async_create_background_task(
+            hass, runtime.async_expire(), "Fetch Latest File target expiry"
+        )
+        _LOGGER.error("Failed to unload Fetch Latest File sensor platform")
     return unload_ok

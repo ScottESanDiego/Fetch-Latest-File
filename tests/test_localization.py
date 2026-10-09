@@ -1,15 +1,14 @@
 """Check that UI metadata and translated text stay complete and separate."""
+
 import ast
 import json
-from pathlib import Path
 import unittest
+from pathlib import Path
 
 import yaml
 
-import support  # Install Home Assistant boundary doubles before importing the integration.
 from custom_components import fetch_latest_file as integration
 from custom_components.fetch_latest_file import const
-
 
 ROOT = Path(__file__).resolve().parents[1] / "custom_components" / "fetch_latest_file"
 
@@ -41,11 +40,19 @@ class LocalizationTests(unittest.TestCase):
     def test_options_have_labels_and_help_for_every_schema_field(self):
         # Inspect the real options schema without loading config-flow HA dependencies.
         tree = ast.parse((ROOT / "config_flow.py").read_text())
-        function = next(node for node in tree.body
-                        if isinstance(node, ast.FunctionDef) and node.name == "_options_schema")
-        keys = {getattr(const, node.args[0].id) for node in ast.walk(function)
-                if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
-                and node.func.attr == "Optional" and isinstance(node.args[0], ast.Name)}
+        function = next(
+            node
+            for node in tree.body
+            if isinstance(node, ast.FunctionDef) and node.name == "_options_schema"
+        )
+        keys = {
+            getattr(const, node.args[0].id)
+            for node in ast.walk(function)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "Optional"
+            and isinstance(node.args[0], ast.Name)
+        }
         options = self.translations["options"]["step"]["init"]
         self.assertEqual(set(options["data"]), keys)
         self.assertEqual(set(options["data_description"]), keys)
@@ -56,4 +63,6 @@ class LocalizationTests(unittest.TestCase):
         self.assertFalse((ROOT / "strings.json").exists())
         self.assertNotIn("[%key:", (ROOT / "translations" / "en.json").read_text())
         self.assertTrue(self.translations["config"]["abort"]["already_configured"])
-        self.assertTrue(self.translations["config"]["abort"]["single_instance_allowed"])
+        self.assertNotIn(
+            "single_instance_allowed", self.translations["config"]["abort"]
+        )

@@ -6,7 +6,7 @@ Note that the original project is archived by the author. This form includes upd
 
 ## Installation
 
-Requires Home Assistant 2026.5.0 or newer.
+Version 4.2.0 requires Home Assistant 2026.10.0 or newer (Python 3.14.2 or newer).
 
 1. Use HACS custom repository:
     [![Open your Home Assistant instance and show the add repository dialog of the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=ScottESanDiego&repository=Fetch-Latest-File&category=integration) <details><summary>Manual Instructions</summary>
@@ -40,7 +40,7 @@ After installing an update to the service field definitions, restart Home Assist
 Here's an example of how to call this service:
 
 ```yaml
-service: fetch_latest_file.fetch
+action: fetch_latest_file.fetch
 data:
   directory: "/ftproot"
   filename: "Reolink-"
@@ -90,13 +90,13 @@ default:
 {{ state_attr('sensor.fetch_latest_file', 'default')['mp4'] }}
 ```
 
-**Note**: Only extensions with matching files will be present. Extension keys are lowercase and do not include the dot. Results are always stored under a `target_id`, including the default target. If an extension conflicts with a reserved result key, such as `timestamp` or `FetchStatus` (case-insensitive), it is prefixed with `ext_`; a `.fetchstatus` file is reported as `ext_fetchstatus`. If no files are found, the target will contain a `status: "No matching files"` entry.
+**Note**: Only extensions with matching files will be present. Extension keys are lowercase and do not include the dot. Results are always stored under a `target_id`, including the default target. To prevent collisions, actual extensions matching a reserved result key, literal `no_extension`, or any `ext_` prefix receive one extra `ext_` prefix. For example, `.overall` becomes `ext_overall`, `.ext_overall` becomes `ext_ext_overall`, and `.no_extension` becomes `ext_no_extension`. Files with no extension retain `no_extension`. If no files are found, the target will contain a `status: "No matching files"` entry.
 
 ### Upload completion and fallback
 
 With `wait_for_upload: false`, the service immediately selects the newest file that meets the filename, extension, and minimum-size criteria. Undersized files are skipped in favor of the next newest qualifying file. Omitting `extension`, or supplying an empty filter, reports all matched extensions.
 
-With `wait_for_upload: true`, the service watches for filesystem notifications before scanning. A writer-close notification can establish readiness immediately after the file is checked again. Otherwise, the file must have unchanged identity, size, and modification time for `quiet_period`. Files that arrive or change during the wait are reconsidered; periodic rescans also recover missed notifications. If watching is unavailable, the service logs a warning and uses the same stability checks within the original timeout.
+With `wait_for_upload: true`, the service watches for filesystem notifications before scanning. A writer-close notification can establish readiness immediately after the file is checked again. Files whose initial modification time is at least `quiet_period` old may return immediately. Recent files and files with future modification times require a close notification or unchanged identity, size, and modification time observed for `quiet_period`. All paths are checked again before publication. Files that arrive or change during the wait are reconsidered; periodic rescans also recover missed notifications. Local Linux storage uses native inotify notifications. If notifications are unavailable, the action logs a warning, adds `notifications_unavailable` to `FetchStatus`, and uses the same heuristic checks within the original timeout.
 
 The service waits for the newest qualifying candidate for each matched extension. An absent requested extension does not delay otherwise ready results. If no qualifying files exist, it waits for arrival until the deadline. At timeout, it selects the newest completed qualifying file per extension. If none is completed, it returns the newest qualifying file with completion marked unverified. `Overall` is the newest of the selected paths. Minimum-size and other search requirements are never relaxed.
 
@@ -108,6 +108,8 @@ The service waits for the newest qualifying candidate for each matched extension
 | `upload_timeout` | The upload deadline required a fallback selection. |
 | `completion_unverified` | The returned file may still be uploading. |
 | `no_matching_file` | No qualifying result exists for a requested extension. |
+| `scan_limit_reached` | A scan reached the configured file or directory limit; results may be incomplete. |
+| `notifications_unavailable` | Notifications failed or were unavailable; heuristic checks were used. |
 | `invalid_size` | The `min_size` value could not be parsed. |
 | `invalid_search` | Directory or filename search validation failed. |
 | `os_error` | An operating-system error prevented the search. |
@@ -126,9 +128,33 @@ default:
       mp4: [upload_timeout]
 ```
 
-Timeout fallback completes the call without raising an upload-timeout error, helping automations continue. If no qualifying file exists at all, the existing `status: "No matching files"` result remains, with `FetchStatus.status: no_match`; no file path can be returned. Invalid input and search errors retain their existing error results, with `FetchStatus.status: error`.
+Timeout fallback completes the call without raising an upload-timeout error, helping automations continue. If no qualifying file exists at all, the existing `status: "No matching files"` result remains, with `FetchStatus.status: no_match`; no file path can be returned. Invalid minimum sizes and invalid searches raise translated validation errors. Filesystem failures raise translated action errors. These failures replace any stale paths for the target with `FetchStatus.status: error` before raising. An unavailable integration also raises an action error.
 
-Upload completion is best detected on local Linux storage when the uploader closes its final file. Writer closure does not prove protocol-level transfer success. The quiet-period check is heuristic: a paused upload can appear complete. An unverified timeout result deliberately favors automation continuity and may point to an unfinished file; check `FetchStatus` when that matters.
+Upload completion is best detected on local Linux storage when the uploader closes its final file. Writer closure does not prove protocol-level transfer success. Both the initial file-age shortcut and the quiet-period check are heuristic: a paused upload can appear complete. A writer-close event that occurred before watching began cannot be recovered retrospectively. An unverified timeout result deliberately favors automation continuity and may point to an unfinished file; check `FetchStatus` when that matters.
+
+### Optional action responses
+
+Automations and scripts can capture the result directly with `response_variable`:
+
+```yaml
+- action: fetch_latest_file.fetch
+  data:
+    directory: "/ftproot"
+    filename: "Reolink-"
+    extension: ["jpg", "mp4"]
+    wait_for_upload: true
+    target_id: "camera1"
+  response_variable: latest_files
+- action: persistent_notification.create
+  data:
+    message: "{{ latest_files['result'].get('Overall', 'No matching file') }}"
+```
+
+The response is `{target_id, result}`. It contains the same target result as the
+sensor, with `timestamp` serialized as an ISO string. API callers request this
+optional response with `return_response`; existing calls need no change.
+The sensor keeps its native datetime timestamps. Disabling the sensor does not
+stop fetching or action responses while the integration is loaded.
 
 ## Parallel Execution
 
@@ -137,7 +163,7 @@ The `target_id` parameter enables safe parallel execution of the service. Servic
 **Example: Multiple cameras in parallel**
 ```yaml
 # These can run simultaneously
-- service: fetch_latest_file.fetch
+- action: fetch_latest_file.fetch
   data:
     directory: "/ftproot/camera1"
     filename: "cam1-"
@@ -145,7 +171,7 @@ The `target_id` parameter enables safe parallel execution of the service. Servic
     min_size: "1M"
     target_id: "camera1"
 
-- service: fetch_latest_file.fetch
+- action: fetch_latest_file.fetch
   data:
     directory: "/ftproot/camera2"
     filename: "cam2-"
@@ -173,10 +199,10 @@ The integration provides GUI-configurable options to control cleanup behavior:
      - Limits how many different `target_id` results are stored
      - Oldest targets are removed when limit is exceeded
    - **Remove target_ids older than (hours)**: 1-168 hours (default: 24)
-     - Automatically removes stale results
+     - Removes stale results once a minute, even without further action calls
      - Prevents unbounded memory growth
 
-These settings help manage the sensor's attribute storage and prevent it from growing indefinitely.
+Cleanup preserves the sensor's last-fetch timestamp. Directory traversal errors surface as action errors; reaching a scan limit returns available results with `scan_limit_reached` diagnostics.
 
 ## Use Case
 
@@ -197,7 +223,7 @@ Version 4 changes the sensor attributes in ways that can break automations, temp
 
 Before upgrading:
 
-1. Make sure your Home Assistant installation is version 2026.5.0 or newer.
+1. Make sure your Home Assistant installation is version 2026.10.0 or newer.
 2. Find any references to `sensor.fetch_latest_file` attributes in automations, scripts, templates, and dashboards.
 3. Update those references to use the new `target_id` structure and extension-based attribute names.
 
@@ -229,11 +255,23 @@ Other upgrade notes:
 
 - Attribute names are lowercase extensions without the dot, such as `jpg`, `png`, `mp4`, or `txt`.
 - Files without an extension are reported as `no_extension`.
-- If a file extension conflicts with a reserved result key, such as `timestamp`, it is reported with an `ext_` prefix.
+- Actual reserved extensions, literal `no_extension`, and extensions beginning with `ext_` receive one extra `ext_` prefix. Ordinary extension keys remain unchanged.
 - `target_id` values must be 1-64 characters and can only contain letters, numbers, underscores, and hyphens.
 - Results are no longer flattened at the top level of the sensor attributes. They are always stored under a `target_id`, including the default target.
 - New scan limits default to 10 subdirectory levels and 10000 files per service call. If a scan that worked in 3.x.x stops finding files, check the integration options and raise those limits if needed.
 - The new **Allowed directories** option defaults to blank, which preserves the older behavior of allowing any readable directory. If you configure allowed directories, service calls can only scan inside those roots.
+
+## Upgrading to 4.2.0
+
+Update Home Assistant to 2026.10.0 or newer before installing 4.2.0. Upload waiting
+remains optional and existing calls keep their defaults. Optional action responses
+can be adopted independently of sensor templates. Review automations that depend
+on invalid-input calls continuing: those calls now raise translated errors.
+Timeouts and no-match outcomes still complete without raising.
+
+If you use unusual extensions, update keys for literal `no_extension` and every
+`ext_` prefix to include the additional `ext_` prefix described above. Ordinary
+extensions such as `jpg` and `mp4` retain their existing keys.
 
 ## UI text and translations
 

@@ -7,8 +7,7 @@
       }
     },
     "abort": {
-      "already_configured": "Fetch Latest File is already configured.",
-      "single_instance_allowed": "Only a single instance of this integration is allowed."
+      "already_configured": "Fetch Latest File is already configured."
     }
   },
   "options": {
@@ -26,11 +25,14 @@
         "data_description": {
           "allowed_directories": "Enter one directory per line. Leave blank to allow any readable directory.",
           "max_scan_depth": "Scan up to this many subdirectory levels (0-100). Zero searches only the top-level directory.",
-          "max_files_to_check": "Check at most this many files per scan (1-100000). This also limits watched directories.",
+          "max_files_to_check": "Check at most this many files per scan (1-100000). Directory watches are separately bounded by the same limit.",
           "max_target_ids": "Keep results for at most this many target IDs (1-100). The oldest results are removed first.",
           "target_expiry_hours": "Remove saved target results older than this many hours (1-168)."
         }
       }
+    },
+    "error": {
+      "invalid_options": "Invalid options: {error}"
     }
   },
   "services": {
@@ -48,7 +50,7 @@
         },
         "extension": {
           "name": "Extension",
-          "description": "Extensions to search for, with each extension as a separate entry, without the dot (for example, jpg and mp4). Leave disabled or empty to search all extensions. Results that happen to use a reserved keyword are prefixed with ext_."
+          "description": "Enter each extension separately, without the dot (for example, jpg and mp4). Leave empty to search all extensions. Reserved names, no_extension, and extensions starting with ext_ receive an extra ext_ prefix in results."
         },
         "min_size": {
           "name": "Minimum file size",
@@ -60,17 +62,34 @@
         },
         "wait_for_upload": {
           "name": "Wait for upload",
-          "description": "Wait for a filesystem close notifications or unchanged file modification time. Defaults to false. If a timeout happens, the FetchStatus field will indicate that."
+          "description": "Wait for writer-close notifications or heuristic file stability. Files already older than the quiet period may return immediately. Timeout fallback is indicated in FetchStatus. Defaults to false."
         },
         "timeout": {
           "name": "Upload timeout",
-          "description": "Maximum time to wait (in seconds) for a file to meet the criteria, typically for being uploaded from a remote system. Defaults to 30."
+          "description": "Maximum upload wait in seconds, starting when this target begins processing. A timeout returns a qualifying fallback when available. Defaults to 30."
         },
         "quiet_period": {
           "name": "Quiet period",
-          "description": "How long (in seconds) the file should be unchanged before assuming it's closed. Defaults to 2."
+          "description": "Seconds of unchanged file identity, size, and modification time needed for heuristic readiness. Initially older files may return immediately. A paused upload can appear complete. Defaults to 2."
         }
       }
+    }
+  },
+  "exceptions": {
+    "invalid_size": {
+      "message": "Invalid minimum size {min_size}: {error}"
+    },
+    "invalid_search": {
+      "message": "Invalid file search: {error}"
+    },
+    "filesystem_error": {
+      "message": "Could not search {directory}: {error}"
+    },
+    "unavailable": {
+      "message": "Fetch Latest File is unavailable. Set up or reload the integration and try again."
+    },
+    "invalid_options": {
+      "message": "Invalid integration options: {error}"
     }
   }
 }
