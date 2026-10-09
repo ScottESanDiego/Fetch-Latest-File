@@ -5,7 +5,9 @@ from __future__ import annotations
 import errno
 import logging
 import os
+import re
 from dataclasses import dataclass
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -90,27 +92,22 @@ def normalize_extensions(extensions: Any) -> set[str]:
 
 
 def parse_min_size(min_size_str: str) -> int:
-    """Parse a Home Assistant service min_size string into bytes."""
-    min_size_str_upper = min_size_str.upper().strip()
-    unit = next(
-        (unit for unit in SIZE_MULTIPLIERS if min_size_str_upper.endswith(unit)),
-        "B",
+    """Parse nonnegative decimal sizes, rounding fractional bytes upward exactly."""
+    match = re.fullmatch(
+        r"\+?([0-9]+(?:\.[0-9]*)?|\.[0-9]+)\s*(B|[KMG]B?)?",
+        min_size_str.strip(),
+        flags=re.IGNORECASE,
     )
-    value_str = min_size_str_upper
+    if match is None:
+        raise ValueError(
+            "Expected a nonnegative decimal size with B, K, M, or G units."
+        )
 
-    if unit != "B":
-        value_str = value_str[: -len(unit)]
-    else:
-        value_str = value_str.rstrip("B")
-
-    if not value_str:
-        raise ValueError("Numeric size value missing.")
-
-    min_size = int(value_str) * SIZE_MULTIPLIERS[unit]
-    if min_size < 0:
-        raise ValueError("Minimum size cannot be negative.")
-
-    return min_size
+    number, unit = match.groups()
+    # Integer arithmetic avoids Decimal context rounding before the byte ceiling.
+    numerator, denominator = Decimal(number).as_integer_ratio()
+    numerator *= SIZE_MULTIPLIERS[(unit or "B")[0].upper()]
+    return (numerator + denominator - 1) // denominator
 
 
 @dataclass(slots=True)

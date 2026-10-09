@@ -23,7 +23,7 @@
           "target_expiry_hours": "Target expiry (hours)"
         },
         "data_description": {
-          "allowed_directories": "Enter one directory per line. Leave blank to allow any readable directory.",
+          "allowed_directories": "Enter one directory per line. Prefer explicit roots limited to the directories your automations need. Leave blank to allow any readable directory.",
           "max_scan_depth": "Scan up to this many subdirectory levels (0-100). Zero searches only the top-level directory.",
           "max_files_to_check": "Check at most this many files per scan (1-100000). Directory watches are separately bounded by the same limit.",
           "max_target_ids": "Keep results for at most this many target IDs (1-100). The oldest results are removed first.",
@@ -54,7 +54,7 @@
         },
         "min_size": {
           "name": "Minimum file size",
-          "description": "The minimum size of the file to fetch. Specify as a string with a unit: B (bytes), K (kilobytes), M (megabytes), or G (gigabytes)."
+          "description": "Nonnegative decimal size, such as 1024, 1KB, 1MB, or 1.5M. Bare values or B mean bytes; K/KB, M/MB, and G/GB use powers of 1024, case-insensitively. Fractional bytes round up. Defaults to 0B."
         },
         "target_id": {
           "name": "Target ID",

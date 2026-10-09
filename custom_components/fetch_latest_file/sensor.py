@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+from datetime import datetime
+
 from homeassistant.components.sensor import SensorDeviceClass, SensorEntity
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.device_registry import DeviceEntryType
 from homeassistant.helpers.entity import DeviceInfo
-from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
+from homeassistant.util import dt as dt_util
 
 from . import FetchLatestFileConfigEntry
 from .const import DOMAIN, INTEGRATION_TITLE
@@ -15,7 +18,7 @@ from .const import DOMAIN, INTEGRATION_TITLE
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: FetchLatestFileConfigEntry,
-    async_add_entities: AddEntitiesCallback,
+    async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     """Create the publisher; disabled entities never attach to the runtime."""
     async_add_entities([FetchLatestFileSensor(entry)])
@@ -43,6 +46,16 @@ class FetchLatestFileSensor(SensorEntity):
         )
         self._attr_native_value = self._runtime.last_fetch
         self._attr_extra_state_attributes = dict(self._runtime.targets)
+
+    @property
+    def state(self) -> str | None:
+        """Preserve fetch precision after HA validates the timestamp value."""
+        state = super().state
+        value = self.native_value
+        if isinstance(value, datetime):
+            # HA's timestamp sensor serializer otherwise drops microseconds.
+            return dt_util.as_utc(value).isoformat()
+        return state
 
     async def async_added_to_hass(self) -> None:
         """Attach only after HA has enabled and added this entity."""

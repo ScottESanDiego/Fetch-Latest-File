@@ -66,7 +66,7 @@ type FetchLatestFileConfigEntry = ConfigEntry[FetchLatestFileRuntimeData]
 
 def _timestamp() -> datetime:
     """Return a Home Assistant-local timestamp."""
-    return dt_util.now().replace(microsecond=0)
+    return dt_util.now()
 
 
 def _validate_target_id(value: str) -> str:

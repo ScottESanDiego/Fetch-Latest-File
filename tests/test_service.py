@@ -2,7 +2,7 @@
 
 import asyncio
 import os
-from datetime import timedelta
+from datetime import timedelta, timezone
 from unittest.mock import patch
 
 import probatio as vol
@@ -15,7 +15,7 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components import fetch_latest_file as integration
 from custom_components.fetch_latest_file.const import DOMAIN
-from custom_components.fetch_latest_file.scanner import MatchedFile
+from custom_components.fetch_latest_file.scanner import MatchedFile, parse_min_size
 
 pytestmark = pytest.mark.asyncio
 
@@ -400,3 +400,120 @@ async def test_permission_failure_during_resolution_is_filesystem_error(
             await call(hass, tmp_path)
     assert caught.value.translation_key == "filesystem_error"
     assert "Overall" not in entry.runtime_data.targets["default"]
+
+
+@pytest.mark.parametrize(
+    ("size", "expected"),
+    [
+        ("0B", 0),
+        ("0", 0),
+        ("123", 123),
+        ("123B", 123),
+        ("1K", 1024),
+        ("1M", 1024**2),
+        ("1G", 1024**3),
+        ("1KB", 1024),
+        ("1MB", 1024**2),
+        ("1GB", 1024**3),
+        (" 1mB ", 1024**2),
+        ("+1M", 1024**2),
+        ("1 M", 1024**2),
+        ("1.5M", 1572864),
+        (".5M", 524288),
+        ("1.M", 1024**2),
+        ("1.1", 2),
+        ("0.1B", 1),
+        ("0.0001K", 1),
+        ("0.001M", 1049),
+        ("1.00000000000000000000000000001B", 2),
+    ],
+)
+async def test_min_size_decimal_formats_round_up_exactly(size, expected):
+    assert parse_min_size(size) == expected
+
+
+@pytest.mark.parametrize(
+    "size",
+    [
+        "",
+        "B",
+        "-1",
+        "-0B",
+        "-.5M",
+        "NaN",
+        "Infinity",
+        "infB",
+        "1e3",
+        "1e3M",
+        "1KBX",
+        "1MBB",
+        "1BB",
+        "1KK",
+        "1KiB",
+        "1.2.3M",
+        ".M",
+        "1 2M",
+        "1K B",
+        "++1M",
+    ],
+)
+async def test_min_size_rejects_negative_nonfinite_and_malformed_values(size):
+    with pytest.raises(ValueError):
+        parse_min_size(size)
+
+
+async def test_fractional_min_size_skips_file_below_rounded_byte_threshold(
+    hass, entry, tmp_path
+):
+    old = tmp_path / "upload-old.jpg"
+    old.write_bytes(b"ab")
+    os.utime(old, (10, 10))
+    newest = tmp_path / "upload-new.jpg"
+    newest.write_bytes(b"a")
+    response = await call(hass, tmp_path, min_size="1.00000000000000000000000000001B")
+    assert response["result"]["Overall"] == str(old)
+    assert response["result"]["FetchStatus"]["reasons"]["Overall"] == ["minimum_size"]
+
+
+async def test_same_second_fetches_preserve_microseconds_in_state_and_response(
+    hass, entry, tmp_path
+):
+    (tmp_path / "upload.jpg").write_bytes(b"complete")
+    first_time = (
+        dt_util.now()
+        .astimezone(timezone(timedelta(hours=-7)))
+        .replace(microsecond=123456)
+    )
+    second_time = first_time.replace(microsecond=234567)
+    states = []
+    responses = []
+    for timestamp in (first_time, second_time):
+        with patch.object(integration.dt_util, "now", return_value=timestamp):
+            responses.append(await call(hass, tmp_path))
+        states.append(hass.states.get(entry.runtime_data.sensor_entity.entity_id))
+        assert entry.runtime_data.targets["default"]["timestamp"] == timestamp
+        assert responses[-1]["result"]["timestamp"] == timestamp.isoformat()
+        assert states[-1].state == dt_util.as_utc(timestamp).isoformat()
+    assert states[0].state != states[1].state
+    assert responses[0]["result"]["timestamp"] != responses[1]["result"]["timestamp"]
+
+
+async def test_initial_sensor_timestamp_is_unknown(hass, entry):
+    entity = entry.runtime_data.sensor_entity
+    assert entity.state is None
+    assert hass.states.get(entity.entity_id).state == "unknown"
+    assert hass.states.get(entity.entity_id).attributes["device_class"] == "timestamp"
+
+
+async def test_sensor_timestamp_keeps_home_assistant_naive_datetime_validation(
+    hass, entry, tmp_path
+):
+    await call(hass, tmp_path)
+    entity = entry.runtime_data.sensor_entity
+    original = entity.native_value
+    entity._attr_native_value = original.replace(tzinfo=None)
+    try:
+        with pytest.raises(ValueError, match="missing timezone information"):
+            _ = entity.state
+    finally:
+        entity._attr_native_value = original

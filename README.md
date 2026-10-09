@@ -27,7 +27,7 @@ Once you've set up the custom component in your Home Assistant instance, you can
 - `directory`: The directory to search for files. *(Required)*
 - `filename`: The start of the file name to search for. *(Required)*
 - `extension`: The file extension(s) to search for. *(Optional)*
-- `min_size`: The minimum size of the files to fetch. Specify the size as a string with a unit: B for bytes, K for kilobytes, M for megabytes, G for gigabytes. For example, "1M" for 1 megabyte. *(Optional)*
+- `min_size`: Nonnegative decimal minimum size, such as `1024`, `1KB`, `1MB`, or `1.5M`. Units are case-insensitive: bare values or B mean bytes; K/KB, M/MB, and G/GB use powers of 1024. Fractional bytes round up (for example, `1.1B` requires 2 bytes). Whitespace around the value or before the unit and a leading plus sign are accepted. Defaults to `0B`. *(Optional)*
 - `wait_for_upload`: Wait for matching uploads to finish before publishing paths. Defaults to `false`. *(Optional)*
 - `timeout`: Maximum upload-wait duration in positive seconds, starting after the target lock is acquired. Defaults to `30`. *(Optional)*
 - `quiet_period`: Positive seconds of unchanged file identity, size, and modification time used when no writer-close notification is available. Defaults to `2`. *(Optional)*
@@ -57,7 +57,7 @@ This will search for the latest `.jpg` and `.mp4` files that start with "Reolink
 
 The integration creates an entity **sensor.fetch_latest_file** that updates when the service is called.
 
-- **State**: Timestamp of the most recent fetch operation (e.g., `2025-10-26T14:30:45-0700`)
+- **State**: Timestamp of the most recent fetch operation, retaining microseconds in UTC (e.g., `2025-10-26T21:30:45.123456+00:00`)
 - **Attributes**: Results organized by `target_id`, with each target containing:
   - `Overall`: The absolute latest file across all matched files
   - One attribute for each matched extension, such as `jpg`, `mp4`, or `txt`
@@ -153,7 +153,10 @@ Automations and scripts can capture the result directly with `response_variable`
 The response is `{target_id, result}`. It contains the same target result as the
 sensor, with `timestamp` serialized as an ISO string. API callers request this
 optional response with `return_response`; existing calls need no change.
-The sensor keeps its native datetime timestamps. Disabling the sensor does not
+Target timestamps retain the Home Assistant local timezone; the sensor state is
+serialized in UTC. Its state serializer preserves
+microseconds after Home Assistant validates the timestamp, so fetches within the
+same second can produce distinct sensor states. Disabling the sensor does not
 stop fetching or action responses while the integration is loaded.
 
 ## Parallel Execution
@@ -190,6 +193,7 @@ The integration provides GUI-configurable options to control cleanup behavior:
 4. Adjust settings:
    - **Allowed directories**: One directory per line (default: blank)
      - When set, service calls can only scan directories inside one of these roots
+     - Configure explicit roots limited to the directories your automations need
      - Leave blank to allow any readable directory, matching earlier behavior
    - **Maximum subdirectory depth to scan**: 0-100 (default: 10)
      - `0` scans only the requested directory
