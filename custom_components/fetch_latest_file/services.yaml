@@ -1,6 +1,4 @@
 fetch:
-  response:
-    optional: true
   fields:
     directory:
       example: "/config"

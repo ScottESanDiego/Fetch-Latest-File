@@ -3,10 +3,13 @@
 import asyncio
 import os
 from datetime import timedelta, timezone
+from pathlib import Path
 from unittest.mock import patch
 
 import probatio as vol
 import pytest
+import yaml
+from homeassistant.core import SupportsResponse
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.helpers import entity_registry as er
 from homeassistant.setup import async_setup_component
@@ -48,6 +51,19 @@ async def test_setup_response_and_sensor(hass, entry, tmp_path):
     assert state.attributes["default"]["Overall"] == str(path)
     assert await call(hass, tmp_path, response=False) is None
     assert runtime.locks == {}
+
+
+async def test_optional_response_registration_without_yaml_response_metadata(
+    hass, entry, tmp_path
+):
+    metadata = yaml.safe_load(
+        (Path(integration.__file__).parent / "services.yaml").read_text()
+    )
+    assert "response" not in metadata["fetch"]
+    assert hass.services.supports_response(DOMAIN, "fetch") is SupportsResponse.OPTIONAL
+    (tmp_path / "upload.jpg").write_bytes(b"complete")
+    assert (await call(hass, tmp_path))["result"]["Overall"].endswith("upload.jpg")
+    assert await call(hass, tmp_path, response=False) is None
 
 
 async def test_persistent_action_before_setup_and_after_unload(hass, tmp_path):

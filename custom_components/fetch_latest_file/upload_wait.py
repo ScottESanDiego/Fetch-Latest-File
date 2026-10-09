@@ -160,9 +160,9 @@ class _Watcher:
 
     async def consume(self) -> None:
         """Coalesce relevant changes; process overflow before optional event paths."""
-        from asyncinotify import Mask
-
         try:
+            from asyncinotify import Mask
+
             async for event in self.observer:
                 if event.mask & Mask.Q_OVERFLOW:
                     self.overflow = True
@@ -198,12 +198,34 @@ class _Watcher:
                 self.wake.set()
         except asyncio.CancelledError:
             raise
-        except (OSError, ValueError) as err:
-            self.failed = True
-            self.wake.set()
-            _LOGGER.warning(
-                "Filesystem notifications failed; using stability checks: %s", err
-            )
+        except Exception as err:
+            self.notification_failed(err)
+
+    def notification_failed(self, err: Exception) -> None:
+        """Discard readiness evidence when the notification stream is uncertain."""
+        self.failed = True
+        self.events.clear()
+        self.readiness_invalidated = True
+        self.discovery_requested = True
+        self.wake.set()
+        _LOGGER.warning(
+            "Filesystem notifications failed; using stability checks: %s",
+            err,
+            exc_info=(type(err), err, err.__traceback__)
+            if not isinstance(err, (OSError, ValueError))
+            else None,
+        )
+
+    def check_consumer(self) -> None:
+        """Retrieve unexpected task failures before selecting a fallback."""
+        if (
+            self.task is not None
+            and self.task.done()
+            and not self.task.cancelled()
+            and not self.failed
+        ):
+            if (err := self.task.exception()) is not None:
+                self.notification_failed(err)
 
     def stop(self) -> None:
         self.stopped = True
@@ -287,14 +309,14 @@ async def async_fetch_files(
                         await _finish_executor(hass, watcher.sync, scan.directories)
                     except (OSError, RuntimeError, ValueError) as err:
                         notifications_failed = True
-                        _LOGGER.warning(
-                            "Could not extend filesystem watches; using stability checks: %s",
-                            err,
-                        )
+                        watcher.notification_failed(err)
             else:
                 scan = await hass.async_add_executor_job(refresh_files, criteria, scan)
+            watcher.check_consumer()
             now = loop.time()
             events, watcher.events = watcher.events, {}
+            if watcher.failed:
+                events.clear()
             if watcher.overflow or watcher.readiness_invalidated:
                 signatures.clear()
                 closed.clear()
@@ -343,6 +365,7 @@ async def async_fetch_files(
                 newest and all(match.path in ready for match in newest.values())
             ):
                 final = await hass.async_add_executor_job(scan_files, criteria)
+                watcher.check_consumer()
                 old_signatures = {match.path: match.signature for match in scan.files}
                 ready = {
                     match.path
@@ -391,22 +414,34 @@ async def async_fetch_files(
                 pass
     finally:
         cleanup_cancelled = False
-        if watcher.task is not None:
-            watcher.task.cancel()
+        try:
+            if watcher.task is not None:
+                watcher.task.cancel()
 
-            # Shield cleanup so repeated unload cancellation cannot leave a reader behind.
-            async def finish_consumer() -> None:
-                try:
-                    await watcher.task
-                except asyncio.CancelledError:
-                    pass
+                # Shield drainage so repeated cancellation cannot abandon the reader.
+                async def finish_consumer() -> None:
+                    try:
+                        await watcher.task
+                    except asyncio.CancelledError:
+                        pass
+                    except Exception as err:
+                        watcher.notification_failed(err)
 
-            cleanup = asyncio.create_task(finish_consumer())
-            while not cleanup.done():
+                cleanup = asyncio.create_task(finish_consumer())
+                while not cleanup.done():
+                    try:
+                        await asyncio.shield(cleanup)
+                    except asyncio.CancelledError:
+                        cleanup_cancelled = True
+                    except Exception as err:
+                        watcher.notification_failed(err)
+                # Retrieve even an immediately completed drainage task's exception.
                 try:
-                    await asyncio.shield(cleanup)
-                except asyncio.CancelledError:
-                    cleanup_cancelled = True
-        await _finish_executor(hass, watcher.stop)
+                    cleanup.result()
+                except Exception as err:
+                    watcher.notification_failed(err)
+        finally:
+            # The reader has stopped; close its descriptor on its owning loop.
+            watcher.stop()
         if cleanup_cancelled:
             raise asyncio.CancelledError

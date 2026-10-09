@@ -758,6 +758,170 @@ async def test_old_candidate_does_not_wait_for_future_arrival(hass, tmp_path):
         await task
 
 
+@pytest.mark.parametrize("bypass_handler", [False, True])
+async def test_unexpected_consumer_failure_returns_fallback_and_closes_on_loop(
+    hass, tmp_path, caplog, bypass_handler
+):
+    from asyncinotify import Mask
+
+    path = tmp_path / "upload.jpg"
+    path.write_bytes(b"complete")
+    os.utime(path, (10, 10))
+    criteria = SearchCriteria(str(tmp_path), "upload", set(), 0, [], 10, 100)
+    loop_thread = threading.get_ident()
+    created = []
+    closed = []
+    failure_delivered = threading.Event()
+    original_scan = upload_wait.scan_files
+
+    class BrokenEvents:
+        delivered = False
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            if not self.delivered:
+                self.delivered = True
+                return SimpleNamespace(mask=Mask.CLOSE_WRITE, path=path)
+            failure_delivered.set()
+            raise RuntimeError("unexpected notification failure")
+
+        def close(self):
+            assert created[0].task.done()
+            closed.append(threading.get_ident())
+
+    def start(watcher, criteria):
+        watcher.criteria = criteria
+        watcher.observer = BrokenEvents()
+        created.append(watcher)
+
+    async def failed_consumer(watcher):
+        failure_delivered.set()
+        raise RuntimeError("unexpected notification failure")
+
+    def scan(criteria):
+        # Ensure the fault occurred, rather than cancelling an unstarted reader.
+        assert failure_delivered.wait(1)
+        return original_scan(criteria)
+
+    consumer = failed_consumer if bypass_handler else upload_wait._Watcher.consume
+    with (
+        patch.object(upload_wait._Watcher, "start", start),
+        patch.object(upload_wait._Watcher, "sync"),
+        patch.object(upload_wait._Watcher, "consume", consumer),
+        patch.object(upload_wait, "scan_files", scan),
+    ):
+        files, status = await upload_wait.async_fetch_files(
+            hass, criteria, wait_for_upload=True, timeout=0.08, quiet_period=10
+        )
+    assert [match.path for match in files] == [str(path)]
+    assert status["status"] == "fallback"
+    assert status["reasons"]["Overall"] == [
+        "upload_timeout",
+        "completion_unverified",
+        "notifications_unavailable",
+    ]
+    assert created[0].failed
+    assert created[0].observer is None
+    assert created[0].task.done()
+    assert closed == [loop_thread]
+    records = [record for record in caplog.records if record.exc_info]
+    assert any(isinstance(record.exc_info[1], RuntimeError) for record in records)
+
+
+async def test_repeated_cancel_drains_reader_before_loop_thread_close(hass, tmp_path):
+    criteria = SearchCriteria(str(tmp_path), "upload", set(), 0, [], 10, 100)
+    reading, draining, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    lifecycle = []
+    loop_thread = threading.get_ident()
+
+    class SlowReader:
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            reading.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                draining.set()
+                await release.wait()
+                lifecycle.append("drained")
+
+        def close(self):
+            assert threading.get_ident() == loop_thread
+            lifecycle.append("closed")
+
+    def start(watcher, criteria):
+        watcher.criteria = criteria
+        watcher.observer = SlowReader()
+
+    with (
+        patch.object(upload_wait._Watcher, "start", start),
+        patch.object(upload_wait._Watcher, "sync"),
+    ):
+        task = asyncio.create_task(
+            upload_wait.async_fetch_files(hass, criteria, wait_for_upload=True)
+        )
+        await asyncio.wait_for(reading.wait(), 1)
+        task.cancel()
+        await asyncio.wait_for(draining.wait(), 1)
+        task.cancel()
+        await asyncio.sleep(0)
+        assert not task.done()
+        assert lifecycle == []
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, 1)
+    assert lifecycle == ["drained", "closed"]
+
+
+async def test_watch_sync_failure_discards_old_and_close_readiness(
+    hass, tmp_path, caplog
+):
+    path = tmp_path / "upload.jpg"
+    path.write_bytes(b"complete")
+    os.utime(path, (10, 10))
+    criteria = SearchCriteria(str(tmp_path), "upload", set(), 0, [], 10, 100)
+    created = []
+    original_sync = upload_wait._Watcher.sync
+    original_start = upload_wait._Watcher.start
+    sync_calls = 0
+
+    def start(watcher, criteria):
+        original_start(watcher, criteria)
+        created.append(watcher)
+
+    def sync(watcher, directories):
+        nonlocal sync_calls
+        sync_calls += 1
+        if sync_calls > 1:
+            watcher.events[str(path)] = True
+            raise OSError("watch reconciliation failed")
+        original_sync(watcher, directories)
+
+    started = time.monotonic()
+    with (
+        patch.object(upload_wait._Watcher, "start", start),
+        patch.object(upload_wait._Watcher, "sync", sync),
+    ):
+        files, status = await upload_wait.async_fetch_files(
+            hass, criteria, wait_for_upload=True, timeout=1, quiet_period=0.1
+        )
+    assert files[0].path == str(path)
+    assert time.monotonic() - started >= 0.09
+    assert status == {
+        "status": "fallback",
+        "reasons": {"Overall": ["notifications_unavailable"]},
+    }
+    assert created[0].failed
+    assert created[0].observer is None
+    assert any(
+        "watch reconciliation failed" in record.message for record in caplog.records
+    )
+
+
 @pytest.mark.parametrize("disappeared", [FileNotFoundError, NotADirectoryError])
 async def test_vanished_candidate_and_symlink_cycle_remain_excluded(
     hass, tmp_path, disappeared

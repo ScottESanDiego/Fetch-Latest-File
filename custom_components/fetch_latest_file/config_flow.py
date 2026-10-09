@@ -29,7 +29,7 @@ from .const import (
     DOMAIN,
     INTEGRATION_TITLE,
 )
-from .runtime import integer_option, validate_allowed_roots, validate_options
+from .runtime import validate_allowed_roots, validate_options
 from .scanner import normalize_allowed_directories
 
 
@@ -51,62 +51,50 @@ def _options_schema(options: Mapping[str, Any]) -> vol.Schema:
             vol.Optional(
                 CONF_MAX_SCAN_DEPTH,
                 default=options.get(CONF_MAX_SCAN_DEPTH, DEFAULT_MAX_SCAN_DEPTH),
-            ): vol.All(
-                selector.NumberSelector(
-                    selector.NumberSelectorConfig(
-                        min=0,
-                        max=100,
-                        step=1,
-                        mode=selector.NumberSelectorMode.BOX,
-                    )
-                ),
-                lambda value: integer_option(value, CONF_MAX_SCAN_DEPTH),
+            ): selector.NumberSelector(
+                selector.NumberSelectorConfig(
+                    min=0,
+                    max=100,
+                    step=1,
+                    mode=selector.NumberSelectorMode.BOX,
+                )
             ),
             vol.Optional(
                 CONF_MAX_FILES_TO_CHECK,
                 default=options.get(
                     CONF_MAX_FILES_TO_CHECK, DEFAULT_MAX_FILES_TO_CHECK
                 ),
-            ): vol.All(
-                selector.NumberSelector(
-                    selector.NumberSelectorConfig(
-                        min=1,
-                        max=100000,
-                        step=1,
-                        mode=selector.NumberSelectorMode.BOX,
-                    )
-                ),
-                lambda value: integer_option(value, CONF_MAX_FILES_TO_CHECK),
+            ): selector.NumberSelector(
+                selector.NumberSelectorConfig(
+                    min=1,
+                    max=100000,
+                    step=1,
+                    mode=selector.NumberSelectorMode.BOX,
+                )
             ),
             vol.Optional(
                 CONF_MAX_TARGET_IDS,
                 default=options.get(CONF_MAX_TARGET_IDS, DEFAULT_MAX_TARGET_IDS),
-            ): vol.All(
-                selector.NumberSelector(
-                    selector.NumberSelectorConfig(
-                        min=1,
-                        max=100,
-                        step=1,
-                        mode=selector.NumberSelectorMode.BOX,
-                    )
-                ),
-                lambda value: integer_option(value, CONF_MAX_TARGET_IDS),
+            ): selector.NumberSelector(
+                selector.NumberSelectorConfig(
+                    min=1,
+                    max=100,
+                    step=1,
+                    mode=selector.NumberSelectorMode.BOX,
+                )
             ),
             vol.Optional(
                 CONF_TARGET_EXPIRY_HOURS,
                 default=options.get(
                     CONF_TARGET_EXPIRY_HOURS, DEFAULT_TARGET_EXPIRY_HOURS
                 ),
-            ): vol.All(
-                selector.NumberSelector(
-                    selector.NumberSelectorConfig(
-                        min=1,
-                        max=168,
-                        step=1,
-                        mode=selector.NumberSelectorMode.BOX,
-                    )
-                ),
-                lambda value: integer_option(value, CONF_TARGET_EXPIRY_HOURS),
+            ): selector.NumberSelector(
+                selector.NumberSelectorConfig(
+                    min=1,
+                    max=168,
+                    step=1,
+                    mode=selector.NumberSelectorMode.BOX,
+                )
             ),
         }
     )

@@ -1,43 +1,46 @@
 # Home Assistant "Fetch Latest File" Custom Component
 
-This custom component for Home Assistant allows you to retrieve ("fetch") the most recently modified files ("latest files"), such as camera screenshots and video events, of a certain minimum size from a specified directory. It was specifically designed for use with Reolink cameras and their integrations but can be easily adapted for a variety of other use cases.
+Fetch the newest files from a directory for your Home Assistant automations. Filter by filename prefix, extension, and minimum size. Optionally wait for uploads to finish. Use the results for Reolink camera snapshots and videos, screenshots, logs, or other files.
 
-Note that the original project is archived by the author. This form includes updates to make it work reliably with the latest Home Assistant versions.  As of version 3.0.0, this component is now a "Sensor" with improved async handling and modern Home Assistant best practices.
+The original author archived the project. This fork maintains compatibility with current Home Assistant versions and publishes results through a sensor and optional action responses.
 
 ## Installation
 
-Version 4.2.0 requires Home Assistant 2026.10.0 or newer (Python 3.14.2 or newer).
+Version 4.2.1 requires Home Assistant 2026.10.0 or newer (Python 3.14.2 or newer).
 
-1. Use HACS custom repository:
-    [![Open your Home Assistant instance and show the add repository dialog of the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=ScottESanDiego&repository=Fetch-Latest-File&category=integration) <details><summary>Manual Instructions</summary>
-        1. Go to any of the sections (integrations, frontend, automation).
-        2. Click on the 3 dots in the top right corner.
-        3. Select "Custom repositories"
-        4. Add this repository [URL](https://github.com/ScottESanDiego/Fetch-Latest-File) to the repository text field.
-        5. Select the integration category.
-        6. Click the "ADD" button. </details>
-2. Go to Configuration > Integrations > Add Integration > **Fetch Latest File**
+1. Add this HACS custom repository and install the integration:
 
+   [![Open your Home Assistant instance and show the add repository dialog of the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=ScottESanDiego&repository=Fetch-Latest-File&category=integration)
 
+   <details>
+   <summary>Manual instructions</summary>
+
+   In HACS, open the three-dot menu and select **Custom repositories**. Add the [repository URL](https://github.com/ScottESanDiego/Fetch-Latest-File), choose the **Integration** category, and click **Add**. Install **Fetch Latest File**.
+
+   </details>
+
+2. Go to **Settings → Devices & Services → Add Integration → Fetch Latest File**.
 
 ## Usage
 
-Once you've set up the custom component in your Home Assistant instance, you can call it using the service `fetch_latest_file.fetch` with the following parameters:
+After setup, call the `fetch_latest_file.fetch` action with these parameters:
 
 - `directory`: The directory to search for files. *(Required)*
 - `filename`: The start of the file name to search for. *(Required)*
 - `extension`: The file extension(s) to search for. *(Optional)*
-- `min_size`: Nonnegative decimal minimum size, such as `1024`, `1KB`, `1MB`, or `1.5M`. Units are case-insensitive: bare values or B mean bytes; K/KB, M/MB, and G/GB use powers of 1024. Fractional bytes round up (for example, `1.1B` requires 2 bytes). Whitespace around the value or before the unit and a leading plus sign are accepted. Defaults to `0B`. *(Optional)*
+- `min_size`: Nonnegative minimum size, such as `1024`, `1KB`, `1MB`, or `1.5M`. Defaults to `0B`. See **Minimum size** below. *(Optional)*
 - `wait_for_upload`: Wait for matching uploads to finish before publishing paths. Defaults to `false`. *(Optional)*
-- `timeout`: Maximum upload-wait duration in positive seconds, starting after the target lock is acquired. Defaults to `30`. *(Optional)*
-- `quiet_period`: Positive seconds of unchanged file identity, size, and modification time used when no writer-close notification is available. Defaults to `2`. *(Optional)*
-- `target_id`: A unique identifier for this fetch operation. Allows parallel execution and namespaced results. Use 1-64 letters, numbers, underscores, or hyphens. If not specified, uses "default". *(Optional)*
+- `timeout`: Maximum upload wait in positive seconds. Starts when the call begins processing after earlier calls for the same target finish. Defaults to `30`. *(Optional)*
+- `quiet_period`: Positive seconds during which file identity, size, and modification time must remain unchanged without a writer-close notification. Defaults to `2`. *(Optional)*
+- `target_id`: Identifies a group of results. Use 1-64 letters, numbers, underscores, or hyphens. Calls with different IDs can run in parallel. Defaults to `default`. *(Optional)*
 
-All eight parameters are available in the visual action editor, both in automations/scripts and under **Developer tools → Actions**. Select **Fetch Latest File: Fetch latest file**, enter the directory and filename prefix, and enable any optional fields you need. Add each extension as a separate entry (for example, `jpg` and `mp4`); leave the extension field disabled or empty to search all extensions. Minimum size remains a text value such as `1M`, upload waiting uses a toggle, and timeout/quiet period use numeric inputs in seconds.
+All eight parameters appear in the visual action editor for automations and scripts and under **Developer tools → Actions**. Select **Fetch Latest File: Fetch latest file**. Enter the directory and filename prefix, then enable the optional fields you need.
+
+Add each extension as a separate entry, such as `jpg` and `mp4`. Leave this field disabled or empty to search all extensions. Enter minimum size as text, such as `1M`. Use the toggle for upload waiting and enter timeout and quiet period in seconds.
 
 After installing an update to the service field definitions, restart Home Assistant and refresh the browser before reopening the action editor.
 
-Here's an example of how to call this service:
+For example:
 
 ```yaml
 action: fetch_latest_file.fetch
@@ -51,21 +54,28 @@ data:
   quiet_period: 2
 ```
 
-This will search for the latest `.jpg` and `.mp4` files that start with "Reolink-" in the specified directory and are at least 1 megabyte in size. The result is then stored in entity state attributes which you can access in your automations, scripts, or templates.
+This searches `/ftproot` for the newest `.jpg` and `.mp4` files starting with `Reolink-`, each at least 1 MiB (1,048,576 bytes). Use the sensor attributes in automations, scripts, or templates.
+
+### Minimum size
+
+Size parsing uses exact decimal values. Existing integer formats such as `1024`, `1B`, `1K`, `1M`, and `1G` still work. Units ignore case: bare values and `B` mean bytes; `K`/`KB`, `M`/`MB`, and `G`/`GB` use powers of 1024. Decimals such as `1.5M` and units such as `KB`, `MB`, and `GB` also work.
+
+Fractional bytes round up: `1.1B` requires 2 bytes. You may include whitespace around the value or before the unit, and a leading plus sign. Values must be nonnegative.
 
 ### Sensor State and Attributes
 
-The integration creates an entity **sensor.fetch_latest_file** that updates when the service is called.
+The integration creates **sensor.fetch_latest_file** and updates it on each call.
 
 - **State**: Timestamp of the most recent fetch operation, retaining microseconds in UTC (e.g., `2025-10-26T21:30:45.123456+00:00`)
 - **Attributes**: Results organized by `target_id`, with each target containing:
-  - `Overall`: The absolute latest file across all matched files
+  - `Overall`: The newest selected file across matched extensions
   - One attribute for each matched extension, such as `jpg`, `mp4`, or `txt`
   - `no_extension`: The latest matched file without a file extension, if any
-  - `timestamp`: When this specific target was last updated
+  - `timestamp`: When this target last updated, as a datetime in Home Assistant’s local timezone
   - `FetchStatus`: Diagnostics for this call, containing `status` and `reasons`
 
 **Example attributes:**
+
 ```yaml
 default:
   Overall: /ftproot/Reolink-OutdoorGarageNorth_20231015_143022.mp4
@@ -78,6 +88,7 @@ default:
 ```
 
 **Accessing attributes in templates:**
+
 ```yaml
 # Access default target results (works without target_id)
 {{ state_attr('sensor.fetch_latest_file', 'default')['jpg'] }}
@@ -90,17 +101,23 @@ default:
 {{ state_attr('sensor.fetch_latest_file', 'default')['mp4'] }}
 ```
 
-**Note**: Only extensions with matching files will be present. Extension keys are lowercase and do not include the dot. Results are always stored under a `target_id`, including the default target. To prevent collisions, actual extensions matching a reserved result key, literal `no_extension`, or any `ext_` prefix receive one extra `ext_` prefix. For example, `.overall` becomes `ext_overall`, `.ext_overall` becomes `ext_ext_overall`, and `.no_extension` becomes `ext_no_extension`. Files with no extension retain `no_extension`. If no files are found, the target will contain a `status: "No matching files"` entry.
+Only extensions with matching files appear. Extension keys are lowercase without the dot. Results always appear under a `target_id`, including `default`. If no files match, the target contains `status: "No matching files"`.
+
+To prevent key collisions, actual extensions matching reserved result keys, literal `no_extension`, or any `ext_` prefix receive one extra `ext_` prefix. For example, `.overall` becomes `ext_overall`, `.ext_overall` becomes `ext_ext_overall`, and `.no_extension` becomes `ext_no_extension`. Files without an extension retain `no_extension`.
 
 ### Upload completion and fallback
 
-With `wait_for_upload: false`, the service immediately selects the newest file that meets the filename, extension, and minimum-size criteria. Undersized files are skipped in favor of the next newest qualifying file. Omitting `extension`, or supplying an empty filter, reports all matched extensions.
+With `wait_for_upload: false`, the action selects the newest file meeting the filename, extension, and minimum-size criteria. It skips undersized files and selects the next newest qualifying file. Omit `extension`, or supply an empty filter, to report all matched extensions.
 
-With `wait_for_upload: true`, the service watches for filesystem notifications before scanning. A writer-close notification can establish readiness immediately after the file is checked again. Files whose initial modification time is at least `quiet_period` old may return immediately. Recent files and files with future modification times require a close notification or unchanged identity, size, and modification time observed for `quiet_period`. All paths are checked again before publication. Files that arrive or change during the wait are reconsidered; periodic rescans also recover missed notifications. Local Linux storage uses native inotify notifications. If notifications are unavailable, the action logs a warning, adds `notifications_unavailable` to `FetchStatus`, and uses the same heuristic checks within the original timeout.
+With `wait_for_upload: true`, the action watches for filesystem notifications before scanning. On local Linux storage, it uses inotify writer-close (`CLOSE_WRITE`) notifications. A close notification can make a file ready as soon as the action rechecks it.
 
-The service waits for the newest qualifying candidate for each matched extension. An absent requested extension does not delay otherwise ready results. If no qualifying files exist, it waits for arrival until the deadline. At timeout, it selects the newest completed qualifying file per extension. If none is completed, it returns the newest qualifying file with completion marked unverified. `Overall` is the newest of the selected paths. Minimum-size and other search requirements are never relaxed.
+Files whose initial modification time is at least `quiet_period` old may return at once. Recent files and files with future modification times need a close notification or unchanged identity, size, and modification time for `quiet_period`.
 
-`FetchStatus` is replaced on every call. Its `status` is `ok`, `fallback`, `no_match`, or `error`; its `reasons` maps affected result keys to lists of these codes:
+The action rechecks paths before publishing results. It also reconsiders files that arrive or change during the wait and rescans to recover missed notifications. If notifications fail or are unavailable, it logs a warning and adds `notifications_unavailable` to `FetchStatus`. It continues with heuristic checks within the original timeout.
+
+The action waits for the newest qualifying candidate for each matched extension. An absent requested extension does not delay otherwise ready results. If no qualifying files exist, it waits for arrival until the deadline. At timeout, it selects the newest completed qualifying file per extension. If none is completed, it returns the newest qualifying file with completion marked unverified. `Overall` is the newest of the selected paths. Minimum-size and other search requirements are never relaxed.
+
+Each call replaces `FetchStatus`. Its `status` is `ok`, `fallback`, `no_match`, or `error`. Its `reasons` maps affected result keys to lists of these codes:
 
 | Code | Meaning |
 | --- | --- |
@@ -114,7 +131,7 @@ The service waits for the newest qualifying candidate for each matched extension
 | `invalid_search` | Directory or filename search validation failed. |
 | `os_error` | An operating-system error prevented the search. |
 
-Affected `Overall` selections are also diagnosed. Degraded outcomes are logged as warnings. For example, if a newer MP4 is still uploading at timeout and an older completed MP4 is available:
+Diagnostics also cover affected `Overall` selections. The action logs degraded outcomes as warnings. For example, a newer MP4 is still uploading at timeout, and an older completed MP4 is available:
 
 ```yaml
 default:
@@ -128,9 +145,13 @@ default:
       mp4: [upload_timeout]
 ```
 
-Timeout fallback completes the call without raising an upload-timeout error, helping automations continue. If no qualifying file exists at all, the existing `status: "No matching files"` result remains, with `FetchStatus.status: no_match`; no file path can be returned. Invalid minimum sizes and invalid searches raise translated validation errors. Filesystem failures raise translated action errors. These failures replace any stale paths for the target with `FetchStatus.status: error` before raising. An unavailable integration also raises an action error.
+Timeout fallback completes the call without an upload-timeout error so automations can continue. If no file qualifies, the result contains `status: "No matching files"` and `FetchStatus.status: no_match`, with no file path.
 
-Upload completion is best detected on local Linux storage when the uploader closes its final file. Writer closure does not prove protocol-level transfer success. Both the initial file-age shortcut and the quiet-period check are heuristic: a paused upload can appear complete. A writer-close event that occurred before watching began cannot be recovered retrospectively. An unverified timeout result deliberately favors automation continuity and may point to an unfinished file; check `FetchStatus` when that matters.
+Invalid minimum sizes and searches raise translated validation errors. Filesystem failures raise translated action errors. Before raising, the action removes stale paths for the target and sets `FetchStatus.status: error`. An unavailable integration also raises an action error.
+
+Upload detection works best on local Linux storage when the uploader closes its final file. Writer closure does not prove that the transfer succeeded. Both the initial file-age shortcut and the quiet-period check are heuristic: a paused upload can appear complete. The action cannot recover a close event from before it began watching.
+
+An unverified timeout result lets automations continue but may point to an unfinished file. Check `FetchStatus` when completion matters.
 
 ### Optional action responses
 
@@ -150,20 +171,16 @@ Automations and scripts can capture the result directly with `response_variable`
     message: "{{ latest_files['result'].get('Overall', 'No matching file') }}"
 ```
 
-The response is `{target_id, result}`. It contains the same target result as the
-sensor, with `timestamp` serialized as an ISO string. API callers request this
-optional response with `return_response`; existing calls need no change.
-Target timestamps retain the Home Assistant local timezone; the sensor state is
-serialized in UTC. Its state serializer preserves
-microseconds after Home Assistant validates the timestamp, so fetches within the
-same second can produce distinct sensor states. Disabling the sensor does not
-stop fetching or action responses while the integration is loaded.
+The response is `{target_id, result}`. It contains the same target result as the sensor, with `timestamp` as an ISO string. API callers request this optional response with `return_response`. Existing calls need no change.
+
+Target timestamps use Home Assistant’s local timezone. The sensor state uses UTC and retains microseconds, so fetches within the same second can produce distinct states. Disabling the sensor does not stop fetching or action responses while the integration is loaded.
 
 ## Parallel Execution
 
-The `target_id` parameter enables safe parallel execution of the service. Service calls with different `target_id` values can run simultaneously, while calls with the same `target_id` execute sequentially to prevent conflicts.
+Calls with different `target_id` values can run at the same time. Calls with the same ID run one at a time.
 
 **Example: Multiple cameras in parallel**
+
 ```yaml
 # These can run simultaneously
 - action: fetch_latest_file.fetch
@@ -185,41 +202,30 @@ The `target_id` parameter enables safe parallel execution of the service. Servic
 
 ## Configuration
 
-The integration provides GUI-configurable options to control cleanup behavior:
+Set search and result-cleanup options in the integration settings:
 
 1. Go to **Settings** → **Devices & Services**
-2. Find **Fetch Latest File** integration
+2. Find the **Fetch Latest File** integration
 3. Click **Configure**
 4. Adjust settings:
    - **Allowed directories**: One directory per line (default: blank)
-     - When set, service calls can only scan directories inside one of these roots
+     - Calls can scan only directories inside these roots when you set them
      - Configure explicit roots limited to the directories your automations need
      - Leave blank to allow any readable directory, matching earlier behavior
    - **Maximum subdirectory depth to scan**: 0-100 (default: 10)
      - `0` scans only the requested directory
    - **Maximum files to check per service call**: 1-100000 (default: 10000)
-     - Stops large scans from running indefinitely
+     - Bounds each scan’s work
    - **Maximum number of target_ids to keep**: 1-100 (default: 20)
-     - Limits how many different `target_id` results are stored
-     - Oldest targets are removed when limit is exceeded
+     - Caps stored `target_id` results and removes the oldest when the limit is exceeded
    - **Remove target_ids older than (hours)**: 1-168 hours (default: 24)
-     - Removes stale results once a minute, even without further action calls
-     - Prevents unbounded memory growth
+     - Removes stale results once a minute, even without further calls
 
-Cleanup preserves the sensor's last-fetch timestamp. Directory traversal errors surface as action errors; reaching a scan limit returns available results with `scan_limit_reached` diagnostics.
+Cleanup preserves the sensor’s last-fetch timestamp. Directory traversal errors raise action errors. Reaching a scan limit returns available results with `scan_limit_reached` diagnostics.
 
-## Use Case
+## Uses
 
-The main use case for this component is in a home security setup with Reolink cameras. Whenever an event is triggered, Home Assistant fetches the relevant files that meet the minimum size requirement and can post them to a specific Discord channel. This provides a streamlined way to access important security footage as soon as it is needed.
-
-## Further Uses
-
-This component can also be used in many other scenarios, such as:
-
-- Fetching the latest screenshot from a home automation event that is of a certain size
-- Retrieving the latest log files of a certain size for debugging purposes
-
-Files are reported by their actual extension. For example, matching `.jpg`, `.png`, and `.mp4` files will produce `jpg`, `png`, and `mp4` attributes. Files without an extension are reported under `no_extension`.
+For Reolink security cameras, an automation can fetch event snapshots and videos that meet a minimum size, then post them to a Discord channel. You can also fetch screenshots after home automation events or retrieve the latest logs for debugging.
 
 ## Upgrading from 3.x.x to 4.y.y
 
@@ -231,7 +237,7 @@ Before upgrading:
 2. Find any references to `sensor.fetch_latest_file` attributes in automations, scripts, templates, and dashboards.
 3. Update those references to use the new `target_id` structure and extension-based attribute names.
 
-The most important change is that version 4 reports files by the actual matched extension instead of broad media type names.
+Version 4 replaces broad media types with matched extensions.
 
 Version 3 examples:
 
@@ -261,28 +267,20 @@ Other upgrade notes:
 - Files without an extension are reported as `no_extension`.
 - Actual reserved extensions, literal `no_extension`, and extensions beginning with `ext_` receive one extra `ext_` prefix. Ordinary extension keys remain unchanged.
 - `target_id` values must be 1-64 characters and can only contain letters, numbers, underscores, and hyphens.
-- Results are no longer flattened at the top level of the sensor attributes. They are always stored under a `target_id`, including the default target.
+- Results appear under a `target_id`, including `default`, rather than at the top level of the sensor attributes.
 - New scan limits default to 10 subdirectory levels and 10000 files per service call. If a scan that worked in 3.x.x stops finding files, check the integration options and raise those limits if needed.
 - The new **Allowed directories** option defaults to blank, which preserves the older behavior of allowing any readable directory. If you configure allowed directories, service calls can only scan inside those roots.
 
 ## Upgrading to 4.2.0
 
-Update Home Assistant to 2026.10.0 or newer before installing 4.2.0. Upload waiting
-remains optional and existing calls keep their defaults. Optional action responses
-can be adopted independently of sensor templates. Review automations that depend
-on invalid-input calls continuing: those calls now raise translated errors.
-Timeouts and no-match outcomes still complete without raising.
+Update Home Assistant to 2026.10.0 or newer before installing 4.2.0. Upload waiting remains optional, and existing calls keep their defaults. You can adopt action responses without changing sensor templates. Review automations that depend on invalid-input calls continuing: these calls now raise translated errors. Timeouts and no-match outcomes still complete without raising.
 
-If you use unusual extensions, update keys for literal `no_extension` and every
-`ext_` prefix to include the additional `ext_` prefix described above. Ordinary
-extensions such as `jpg` and `mp4` retain their existing keys.
+If you use unusual extensions, add the extra `ext_` prefix to keys for literal `no_extension` and every `ext_` prefix, as described above. Ordinary extensions such as `jpg` and `mp4` keep their keys.
 
-## UI text and translations
+### Version 4.2.1 fixes
 
-Home Assistant UI labels, descriptions, and configuration-flow messages are maintained in `custom_components/fetch_latest_file/translations/en.json`. Additional languages use the same keys in `translations/<language_code>.json`, with literal translated text. Custom integrations do not use Core's `strings.json` or build-time translation references.
-
-`services.yaml` defines selectors, required fields, defaults, and example values. Keep UI prose in the translation files so there is one English source to maintain. The integration name used in Python is shared through `INTEGRATION_TITLE` in `const.py`; status values and diagnostic codes are part of the automation interface.
+Unexpected notification failures now fall back to stability checks within the original timeout and report `notifications_unavailable`. Notification failures and repeated cancellation release filesystem watches. Action responses remain optional and work with the visual action editor. The integration options form now opens and saves correctly.
 
 ## Support
 
-Feel free to [open an issue](https://github.com/ScottESanDiego/Fetch-Latest-File/issues) for any problems or feature requests.
+[Open an issue](https://github.com/ScottESanDiego/Fetch-Latest-File/issues) to report a problem or request a feature.
