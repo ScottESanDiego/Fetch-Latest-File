@@ -1,10 +1,12 @@
 """The Fetch Latest File integration."""
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 import logging
+import math
 import re
 from typing import TYPE_CHECKING, Any
 
@@ -32,8 +34,9 @@ from .scanner import (
     normalize_allowed_directories,
     normalize_extensions,
     parse_min_size,
-    search_files,
 )
+
+from .upload_wait import async_fetch_files
 
 if TYPE_CHECKING:
     from .sensor import FetchLatestFileSensor
@@ -52,6 +55,8 @@ class FetchLatestFileRuntimeData:
     """Runtime data for Fetch Latest File."""
 
     sensor_entity: FetchLatestFileSensor | None = None
+    active_fetches: set[asyncio.Task] = field(default_factory=set)
+    unloading: bool = False
 
 
 type FetchLatestFileConfigEntry = ConfigEntry[FetchLatestFileRuntimeData]
@@ -70,6 +75,17 @@ def _validate_target_id(value: str) -> str:
         )
 
     return value
+
+
+def _positive_seconds(value: object) -> float:
+    """Reject zero, nonfinite, and negative waiting durations."""
+    try:
+        seconds = float(value)
+    except (ValueError, TypeError) as err:
+        raise vol.Invalid("Duration must be a positive number of seconds") from err
+    if not math.isfinite(seconds) or seconds <= 0:
+        raise vol.Invalid("Duration must be a positive finite number of seconds")
+    return seconds
 
 
 def _int_option(options: Mapping[str, object], key: str, default: int) -> int:
@@ -92,6 +108,9 @@ SERVICE_FETCH_SCHEMA = vol.Schema({
     vol.Required("filename"): cv.string,
     vol.Optional("extension"): vol.Any(cv.string, [cv.string]),
     vol.Optional("min_size", default="0B"): cv.string,
+    vol.Optional("wait_for_upload", default=False): cv.boolean,
+    vol.Optional("timeout", default=30): _positive_seconds,
+    vol.Optional("quiet_period", default=2): _positive_seconds,
     vol.Optional("target_id", default=DEFAULT_TARGET_ID): vol.All(
         cv.string,
         _validate_target_id,
@@ -107,6 +126,20 @@ async def async_setup_entry(hass: HomeAssistant, entry: FetchLatestFileConfigEnt
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
     async def handle_fetch(call: ServiceCall) -> None:
+        """Track queued and active calls so unload can await their cleanup."""
+        runtime = entry.runtime_data
+        if runtime.unloading:
+            return
+        task = asyncio.current_task()
+        if task is not None:
+            runtime.active_fetches.add(task)
+        try:
+            await process_fetch(call)
+        finally:
+            if task is not None:
+                runtime.active_fetches.discard(task)
+
+    async def process_fetch(call: ServiceCall) -> None:
         """Handle the service call to fetch the latest file(s) and update the sensor."""
         _LOGGER.debug("Service fetch_latest_file.fetch called with data: %s", call.data)
 
@@ -129,6 +162,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: FetchLatestFileConfigEnt
             except ValueError as e:
                 _LOGGER.error("Invalid 'min_size' input '%s': %s", min_size_str, e)
                 sensor_entity.update_target_data(target_id, {
+                    "FetchStatus": {"status": "error", "reasons": {"Overall": ["invalid_size"]}},
                     "error": "Invalid Size",
                     "error_details": f"Input: {min_size_str}, Error: {e}",
                     "timestamp": _timestamp(),
@@ -153,10 +187,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: FetchLatestFileConfigEnt
             )
 
             try:
-                found_files = await hass.async_add_executor_job(search_files, criteria)
+                found_files, fetch_status = await async_fetch_files(
+                    hass, criteria,
+                    wait_for_upload=call.data.get("wait_for_upload", False),
+                    timeout=call.data.get("timeout", 30),
+                    quiet_period=call.data.get("quiet_period", 2),
+                )
             except FileSearchError as e:
                 _LOGGER.error("File search validation error: %s", e)
                 sensor_entity.update_target_data(target_id, {
+                    "FetchStatus": {"status": "error", "reasons": {"Overall": ["invalid_search"]}},
                     "error": "Invalid Search",
                     "error_details": str(e),
                     "timestamp": _timestamp(),
@@ -165,15 +205,19 @@ async def async_setup_entry(hass: HomeAssistant, entry: FetchLatestFileConfigEnt
             except OSError as e:
                 _LOGGER.error("OS error walking directory %s: %s", directory, e)
                 sensor_entity.update_target_data(target_id, {
+                    "FetchStatus": {"status": "error", "reasons": {"Overall": ["os_error"]}},
                     "error": "OS Error Walking Dir",
                     "error_details": f"Directory: {directory}, Error: {e}",
                     "timestamp": _timestamp(),
                 })
                 return
 
+            if fetch_status["status"] != "ok":
+                _LOGGER.warning("Degraded fetch result for target '%s': %s", target_id, fetch_status)
             if not found_files:
                 _LOGGER.info("No matching files found for the criteria.")
                 sensor_entity.update_target_data(target_id, {
+                    "FetchStatus": fetch_status,
                     "status": "No matching files",
                     "timestamp": _timestamp(),
                 })
@@ -181,6 +225,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: FetchLatestFileConfigEnt
 
             file_results: dict[str, Any] = build_file_results(found_files)
             file_results["timestamp"] = _timestamp()
+            file_results["FetchStatus"] = fetch_status
 
             # Update sensor entity with target_id namespaced results
             sensor_entity.update_target_data(target_id, file_results)
@@ -208,6 +253,13 @@ async def async_unload_entry(hass: HomeAssistant, entry: FetchLatestFileConfigEn
     """Unload a config entry."""
     _LOGGER.info("Unloading FetchLatestFile integration...")
 
+    runtime = entry.runtime_data
+    runtime.unloading = True
+    active = list(runtime.active_fetches)
+    for task in active:
+        task.cancel()
+    if active:
+        await asyncio.gather(*active, return_exceptions=True)
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
 
     if unload_ok:
@@ -216,6 +268,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: FetchLatestFileConfigEn
             hass.services.async_remove(DOMAIN, SERVICE_FETCH)
         _LOGGER.info("FetchLatestFile integration successfully unloaded.")
     else:
+        runtime.unloading = False
         _LOGGER.error("Failed to unload one or more FetchLatestFile platforms.")
 
     return unload_ok

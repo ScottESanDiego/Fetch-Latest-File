@@ -54,6 +54,20 @@
           "name": "Target ID",
           "description": "A unique identifier for this fetch operation. Use 1-64 letters, numbers, underscores, or hyphens. Service calls with different target_id values can run in parallel, while calls with the same target_id will execute sequentially to prevent conflicts. If not specified, uses 'default'.",
           "example": "camera1"
+        },
+        "wait_for_upload": {
+          "name": "Wait for upload",
+          "description": "Wait for writer-close notifications or unchanged file identity, size, and modification time. Defaults to false. At timeout, prefer a completed qualifying file, or return a qualifying file with completion unverified in FetchStatus."
+        },
+        "timeout": {
+          "name": "Upload timeout",
+          "description": "Maximum upload-wait duration in positive seconds after acquiring the target lock. Defaults to 30. Minimum-size and other search criteria are never relaxed.",
+          "example": "30"
+        },
+        "quiet_period": {
+          "name": "Quiet period",
+          "description": "Positive seconds of unchanged file identity, size, and modification time required without a writer-close notification. Defaults to 2. A paused upload can appear complete.",
+          "example": "2"
         }
       }
     }

@@ -28,6 +28,9 @@ Once you've set up the custom component in your Home Assistant instance, you can
 - `filename`: The start of the file name to search for. *(Required)*
 - `extension`: The file extension(s) to search for. *(Optional)*
 - `min_size`: The minimum size of the files to fetch. Specify the size as a string with a unit: B for bytes, K for kilobytes, M for megabytes, G for gigabytes. For example, "1M" for 1 megabyte. *(Optional)*
+- `wait_for_upload`: Wait for matching uploads to finish before publishing paths. Defaults to `false`. *(Optional)*
+- `timeout`: Maximum upload-wait duration in positive seconds, starting after the target lock is acquired. Defaults to `30`. *(Optional)*
+- `quiet_period`: Positive seconds of unchanged file identity, size, and modification time used when no writer-close notification is available. Defaults to `2`. *(Optional)*
 - `target_id`: A unique identifier for this fetch operation. Allows parallel execution and namespaced results. Use 1-64 letters, numbers, underscores, or hyphens. If not specified, uses "default". *(Optional)*
 
 Here's an example of how to call this service:
@@ -39,6 +42,9 @@ data:
   filename: "Reolink-"
   extension: ["jpg", "mp4"]
   min_size: "1M"
+  wait_for_upload: true
+  timeout: 30
+  quiet_period: 2
 ```
 
 This will search for the latest `.jpg` and `.mp4` files that start with "Reolink-" in the specified directory and are at least 1 megabyte in size. The result is then stored in entity state attributes which you can access in your automations, scripts, or templates.
@@ -53,6 +59,7 @@ The integration creates an entity **sensor.fetch_latest_file** that updates when
   - One attribute for each matched extension, such as `jpg`, `mp4`, or `txt`
   - `no_extension`: The latest matched file without a file extension, if any
   - `timestamp`: When this specific target was last updated
+  - `FetchStatus`: Diagnostics for this call, containing `status` and `reasons`
 
 **Example attributes:**
 ```yaml
@@ -61,6 +68,9 @@ default:
   mp4: /ftproot/Reolink-OutdoorGarageNorth_20231015_143022.mp4
   jpg: /ftproot/Reolink-OutdoorGarageNorth_20231015_143020.jpg
   timestamp: "2025-10-26T14:30:45-0700"
+  FetchStatus:
+    status: ok
+    reasons: {}
 ```
 
 **Accessing attributes in templates:**
@@ -76,7 +86,45 @@ default:
 {{ state_attr('sensor.fetch_latest_file', 'default')['mp4'] }}
 ```
 
-**Note**: Only extensions with matching files will be present. Extension keys are lowercase and do not include the dot. Results are always stored under a `target_id`, including the default target. If an extension conflicts with a reserved result key, such as `timestamp`, it is prefixed with `ext_`. If no files are found, the target will contain a `status: "No matching files"` entry.
+**Note**: Only extensions with matching files will be present. Extension keys are lowercase and do not include the dot. Results are always stored under a `target_id`, including the default target. If an extension conflicts with a reserved result key, such as `timestamp` or `FetchStatus` (case-insensitive), it is prefixed with `ext_`; a `.fetchstatus` file is reported as `ext_fetchstatus`. If no files are found, the target will contain a `status: "No matching files"` entry.
+
+### Upload completion and fallback
+
+With `wait_for_upload: false`, the service immediately selects the newest file that meets the filename, extension, and minimum-size criteria. Undersized files are skipped in favor of the next newest qualifying file. Omitting `extension`, or supplying an empty filter, reports all matched extensions.
+
+With `wait_for_upload: true`, the service watches for filesystem notifications before scanning. A writer-close notification can establish readiness immediately after the file is checked again. Otherwise, the file must have unchanged identity, size, and modification time for `quiet_period`. Files that arrive or change during the wait are reconsidered; periodic rescans also recover missed notifications. If watching is unavailable, the service logs a warning and uses the same stability checks within the original timeout.
+
+The service waits for the newest qualifying candidate for each matched extension. An absent requested extension does not delay otherwise ready results. If no qualifying files exist, it waits for arrival until the deadline. At timeout, it selects the newest completed qualifying file per extension. If none is completed, it returns the newest qualifying file with completion marked unverified. `Overall` is the newest of the selected paths. Minimum-size and other search requirements are never relaxed.
+
+`FetchStatus` is replaced on every call. Its `status` is `ok`, `fallback`, `no_match`, or `error`; its `reasons` maps affected result keys to lists of these codes:
+
+| Code | Meaning |
+| --- | --- |
+| `minimum_size` | A newer matching file was skipped because it was too small. |
+| `upload_timeout` | The upload deadline required a fallback selection. |
+| `completion_unverified` | The returned file may still be uploading. |
+| `no_matching_file` | No qualifying result exists for a requested extension. |
+| `invalid_size` | The `min_size` value could not be parsed. |
+| `invalid_search` | Directory or filename search validation failed. |
+| `os_error` | An operating-system error prevented the search. |
+
+Affected `Overall` selections are also diagnosed. Degraded outcomes are logged as warnings. For example, if a newer MP4 is still uploading at timeout and an older completed MP4 is available:
+
+```yaml
+default:
+  Overall: /ftproot/Reolink-older.mp4
+  mp4: /ftproot/Reolink-older.mp4
+  timestamp: "2025-10-26T14:30:45-0700"
+  FetchStatus:
+    status: fallback
+    reasons:
+      Overall: [upload_timeout]
+      mp4: [upload_timeout]
+```
+
+Timeout fallback completes the call without raising an upload-timeout error, helping automations continue. If no qualifying file exists at all, the existing `status: "No matching files"` result remains, with `FetchStatus.status: no_match`; no file path can be returned. Invalid input and search errors retain their existing error results, with `FetchStatus.status: error`.
+
+Upload completion is best detected on local Linux storage when the uploader closes its final file. Writer closure does not prove protocol-level transfer success. The quiet-period check is heuristic: a paused upload can appear complete. An unverified timeout result deliberately favors automation continuity and may point to an unfinished file; check `FetchStatus` when that matters.
 
 ## Parallel Execution
 

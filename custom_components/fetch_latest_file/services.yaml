@@ -22,6 +22,37 @@ fetch:
       description: The minimum size of the file to fetch. Specify the size as a string with a unit, B for bytes, K for kilobytes, M for megabytes, G for gigabytes. For example, "1M" for 1 megabyte.
       example: "1M"
       required: false
+    wait_for_upload:
+      name: Wait for Upload
+      description: Wait for writer-close notifications or a period of unchanged file identity, size, and modification time. At timeout, prefer a completed qualifying file, or return a qualifying file with completion unverified in FetchStatus.
+      required: false
+      default: false
+      selector:
+        boolean:
+    timeout:
+      name: Upload Timeout
+      description: Maximum upload-wait duration in positive seconds after acquiring the target lock. The service never relaxes the minimum size or other search criteria.
+      required: false
+      default: 30
+      example: 30
+      selector:
+        number:
+          min: 0.001
+          step: any
+          mode: box
+          unit_of_measurement: s
+    quiet_period:
+      name: Quiet Period
+      description: Positive seconds of unchanged file identity, size, and modification time required when no writer-close notification is available. A paused upload can appear complete.
+      required: false
+      default: 2
+      example: 2
+      selector:
+        number:
+          min: 0.001
+          step: any
+          mode: box
+          unit_of_measurement: s
     target_id:
       name: Target ID
       description: A unique identifier for this fetch operation. Use 1-64 letters, numbers, underscores, or hyphens. Service calls with different target_id values can run in parallel, while calls with the same target_id will execute sequentially to prevent conflicts. If not specified, uses 'default'.

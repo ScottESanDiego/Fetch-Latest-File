@@ -9,7 +9,7 @@ from typing import Any
 
 _LOGGER = logging.getLogger(__name__)
 
-RESERVED_RESULT_KEYS = {"Overall", "timestamp", "status", "error", "error_details", "default"}
+RESERVED_RESULT_KEYS = {"Overall", "timestamp", "status", "error", "error_details", "default", "FetchStatus"}
 SIZE_MULTIPLIERS = {"B": 1, "K": 1024, "M": 1024**2, "G": 1024**3}
 
 
@@ -24,6 +24,15 @@ class MatchedFile:
     modified: float
     path: str
     extension: str
+    size: int = 0
+    mtime_ns: int = 0
+    device: int = 0
+    inode: int = 0
+
+    @property
+    def signature(self) -> tuple[int, int, int, int]:
+        """Identity and content metadata used for upload readiness."""
+        return self.device, self.inode, self.size, self.mtime_ns
 
 
 @dataclass(frozen=True, slots=True)
@@ -94,80 +103,96 @@ def parse_min_size(min_size_str: str) -> int:
     return min_size
 
 
+@dataclass(slots=True)
+class ScanResult:
+    """Qualifying files, skipped small matches, and validated watch directories."""
+
+    files: list[MatchedFile]
+    undersized: list[MatchedFile]
+    directories: list[str]
+
+
+def result_key(extension: str) -> str:
+    """Protect sensor metadata from extension-name collisions."""
+    key = extension or "no_extension"
+    if key.lower() in {reserved.lower() for reserved in RESERVED_RESULT_KEYS}:
+        return f"ext_{key}"
+    return key
+
+
 def build_file_results(found_files: list[MatchedFile]) -> dict[str, str]:
     """Build sensor file result attributes from matched files."""
     sorted_files = sorted(found_files, key=lambda match: match.modified, reverse=True)
     file_results = {"Overall": sorted_files[0].path}
-
     for matched_file in sorted_files:
-        extension_key = matched_file.extension or "no_extension"
-        if extension_key in RESERVED_RESULT_KEYS:
-            extension_key = f"ext_{extension_key}"
-
-        file_results.setdefault(extension_key, matched_file.path)
-
+        file_results.setdefault(result_key(matched_file.extension), matched_file.path)
     return file_results
 
 
 def search_files(criteria: SearchCriteria) -> list[MatchedFile]:
     """Search for matching files. Runs in Home Assistant's executor."""
+    return scan_files(criteria).files
+
+
+def scan_files(criteria: SearchCriteria) -> ScanResult:
+    """Scan with the same security and resource limits used by notifications."""
     base_path = _resolve_base_directory(criteria.directory)
     _validate_allowed_directory(base_path, criteria.allowed_directories)
     _validate_filename_prefix(criteria.filename_prefix)
-
-    _LOGGER.debug(
-        "Searching in '%s' for files starting with '%s'",
-        base_path,
-        criteria.filename_prefix,
-    )
-    if criteria.extensions:
-        _LOGGER.debug("Filtering by extensions: %s", criteria.extensions)
-    if criteria.min_size > 0:
-        _LOGGER.debug("Filtering by minimum size: %d bytes", criteria.min_size)
-
-    found_files: list[MatchedFile] = []
+    result = ScanResult([], [], [])
     file_count = 0
-
     for dirpath, dirnames, filenames in os.walk(base_path, followlinks=False):
-        dirpath = Path(dirpath)
-        depth = _directory_depth(base_path, dirpath)
-        if depth is None:
-            _LOGGER.warning("Skipping directory outside base path: %s", dirpath)
+        current = Path(dirpath)
+        depth = _directory_depth(base_path, current)
+        if (depth is None or depth > criteria.max_depth or current.is_symlink()
+                or not _is_resolved_child(base_path, current)):
             dirnames.clear()
             continue
-
-        if depth > criteria.max_depth:
-            _LOGGER.debug("Skipping directory (too deep): %s", dirpath)
+        # Bound empty-directory traversal and the number of nonrecursive watches too.
+        if len(result.directories) >= criteria.max_files_to_check:
+            _LOGGER.warning("Reached directory check limit (%d)", criteria.max_files_to_check)
+            break
+        result.directories.append(str(current))
+        dirnames[:] = [name for name in dirnames if not (current / name).is_symlink()]
+        if depth == criteria.max_depth:
             dirnames.clear()
-            continue
-
-        if not _is_resolved_child(base_path, dirpath):
-            _LOGGER.warning("Skipping directory outside base path: %s", dirpath)
-            dirnames.clear()
-            continue
-
         for filename in filenames:
             file_count += 1
             if file_count > criteria.max_files_to_check:
-                _LOGGER.warning(
-                    "Reached maximum file check limit (%d), stopping search",
-                    criteria.max_files_to_check,
-                )
-                return found_files
-
+                _LOGGER.warning("Reached maximum file check limit (%d)", criteria.max_files_to_check)
+                return result
             if not filename.lower().startswith(criteria.filename_prefix.lower()):
                 continue
+            match = _match_file(base_path, current / filename, criteria.extensions, 0)
+            if match is not None:
+                (result.files if match.size >= criteria.min_size else result.undersized).append(match)
+    return result
 
-            matched_file = _match_file(
-                base_path=base_path,
-                file_path=dirpath / filename,
-                extensions=criteria.extensions,
-                min_size=criteria.min_size,
-            )
-            if matched_file is not None:
-                found_files.append(matched_file)
 
-    return found_files
+def watch_directories(criteria: SearchCriteria) -> list[str]:
+    """Validate and enumerate directories before the first candidate scan."""
+    base_path = _resolve_base_directory(criteria.directory)
+    _validate_allowed_directory(base_path, criteria.allowed_directories)
+    _validate_filename_prefix(criteria.filename_prefix)
+    directories: list[str] = []
+    file_count = 0
+    for dirpath, dirnames, filenames in os.walk(base_path, followlinks=False):
+        current = Path(dirpath)
+        depth = _directory_depth(base_path, current)
+        if (depth is None or depth > criteria.max_depth or current.is_symlink()
+                or not _is_resolved_child(base_path, current)):
+            dirnames.clear()
+            continue
+        if len(directories) >= criteria.max_files_to_check:
+            break
+        directories.append(str(current))
+        dirnames[:] = [name for name in dirnames if not (current / name).is_symlink()]
+        if depth == criteria.max_depth:
+            dirnames.clear()
+        file_count += len(filenames)
+        if file_count >= criteria.max_files_to_check:
+            break
+    return directories
 
 
 def _resolve_base_directory(directory: str) -> Path:
@@ -293,4 +318,8 @@ def _match_file(
         modified=stats.st_mtime,
         path=str(real_file_path),
         extension=file_ext,
+        size=stats.st_size,
+        mtime_ns=stats.st_mtime_ns,
+        device=stats.st_dev,
+        inode=stats.st_ino,
     )
