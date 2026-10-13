@@ -225,6 +225,8 @@ async def test_schema_defaults_and_positive_durations():
     assert normalized["wait_for_upload"] is False
     assert normalized["timeout"] == 30
     assert normalized["quiet_period"] == 2
+    assert normalized["fresh_extensions"] == []
+    assert normalized["freshness_window"] == 5
     for field in ["MinSize", "minsize", "timeout", "quiet_period"]:
         for value in (
             ["1M"]
@@ -235,6 +237,48 @@ async def test_schema_defaults_and_positive_durations():
                 integration.SERVICE_FETCH_SCHEMA(
                     {"directory": "/tmp", "filename": "", field: value}
                 )
+
+
+async def test_service_rejects_fresh_extension_outside_requested_filter(
+    hass, entry, tmp_path
+):
+    with pytest.raises(vol.Invalid, match="must be included in extension"):
+        await call(hass, tmp_path, extension=["jpg"], fresh_extensions=["png"])
+    assert entry.runtime_data.targets == {}
+
+
+@pytest.mark.parametrize("value", [0, -1, "nan", "inf", float("nan"), float("inf")])
+async def test_service_rejects_nonpositive_or_nonfinite_freshness_window(
+    hass, entry, tmp_path, value
+):
+    with pytest.raises(vol.Invalid, match="positive finite"):
+        await call(hass, tmp_path, freshness_window=value)
+    assert entry.runtime_data.targets == {}
+
+
+async def test_service_passes_normalized_fresh_extensions_and_default_window(
+    hass, entry, tmp_path
+):
+    received = []
+
+    async def fetch(hass, criteria, **kwargs):
+        received.append((criteria.extensions, kwargs))
+        return [MatchedFile(1, "/upload.jpg", "jpg")], {"status": "ok", "reasons": {}}
+
+    with patch.object(integration, "async_fetch_files", fetch):
+        await call(
+            hass,
+            tmp_path,
+            extension=[" .JPG ", "MP4"],
+            fresh_extensions=[" ..JpG ", "jpg"],
+            wait_for_upload=True,
+        )
+
+    [(extensions, passed)] = received
+    assert extensions == {"jpg", "mp4"}
+    assert passed["fresh_extensions"] == {"jpg"}
+    assert passed["freshness_window"] == 5
+    assert passed["wait_for_upload"] is True
 
 
 async def test_user_and_options_flows_reload(hass):

@@ -183,10 +183,8 @@ class TestFiles(Assertions):
         self.assertEqual([match.path for match in files], [str(path)])
         self.assertEqual(status["status"], "ok")
 
-    async def test_timeout_uses_older_completed_file(self):
-        older = self.file("upload-old.mp4", modified=10)
-        # Both candidates must exist before scanning: the old-file heuristic may
-        # legitimately publish before an upload created after watch setup arrives.
+    async def test_timeout_keeps_pinned_file_instead_of_older_completed_file(self):
+        self.file("upload-old.mp4", modified=10)
         newer = self.root / "upload-new.mp4"
         handle = newer.open("wb")
         self.addCleanup(handle.close)
@@ -199,10 +197,13 @@ class TestFiles(Assertions):
             timeout=0.3,
             quiet_period=10,
         )
-        self.assertEqual([match.path for match in files], [older])
+        self.assertEqual([match.path for match in files], [str(newer)])
         self.assertEqual(
             status["reasons"],
-            {"mp4": ["upload_timeout"], "Overall": ["upload_timeout"]},
+            {
+                "mp4": ["upload_timeout", "completion_unverified"],
+                "Overall": ["upload_timeout", "completion_unverified"],
+            },
         )
 
     async def test_cancellation_waits_for_observer_setup_and_stops_it(self):
@@ -419,7 +420,7 @@ class TestRevalidation(Assertions):
         self.assertEqual(files, [])
         self.assertEqual(status["status"], "no_match")
 
-    async def test_replacement_during_final_scan_loses_old_readiness(self):
+    async def test_replacement_during_final_scan_never_replaces_pin(self):
         hass = self.hass
         original = MatchedFile(
             10, "/upload.jpg", "jpg", 10, time.time_ns() + 10000000000, 1, 1
@@ -448,24 +449,24 @@ class TestRevalidation(Assertions):
             files, status = await upload_wait.async_fetch_files(
                 hass, criteria, wait_for_upload=True, timeout=0.3, quiet_period=0.05
             )
-        self.assertEqual(files, [replacement])
-        self.assertGreaterEqual(time.monotonic() - started, 0.09)
-        self.assertEqual(status["status"], "ok")
+        self.assertEqual(files, [])
+        self.assertGreaterEqual(time.monotonic() - started, 0.29)
+        self.assertEqual(status["status"], "no_match")
 
 
 @pytest.mark.asyncio
-async def test_old_initial_mtime_is_immediate(hass, tmp_path):
+async def test_old_initial_mtime_requires_observed_quiet(hass, tmp_path):
     path = tmp_path / "upload.jpg"
     path.write_bytes(b"complete")
     os.utime(path, (10, 10))
     criteria = SearchCriteria(str(tmp_path), "upload", set(), 0, [], 10, 100)
     started = time.monotonic()
     files, status = await upload_wait.async_fetch_files(
-        hass, criteria, wait_for_upload=True, quiet_period=10, timeout=1
+        hass, criteria, wait_for_upload=True, quiet_period=0.05, timeout=1
     )
     assert files[0].path == str(path)
     assert status["status"] == "ok"
-    assert time.monotonic() - started < 0.5
+    assert time.monotonic() - started >= 0.045
 
 
 @pytest.mark.parametrize("future", [False, True])
@@ -706,9 +707,9 @@ async def test_real_directory_move_reconciles_watches(hass, tmp_path):
             assert str(moved) in created[0].directories
             assert str(child) not in created[0].directories
             handle.close()
-            files, status = await asyncio.wait_for(task, 1)
-            assert files[0].path == str(moved / "upload.jpg")
-            assert status["status"] == "ok"
+            files, status = await asyncio.wait_for(task, 3)
+            assert files == []
+            assert status["status"] == "no_match"
         finally:
             handle.close()
             if not task.done():
@@ -746,7 +747,7 @@ async def test_old_candidate_does_not_wait_for_future_arrival(hass, tmp_path):
     try:
         files, status = await asyncio.wait_for(
             upload_wait.async_fetch_files(
-                hass, criteria, wait_for_upload=True, quiet_period=10, timeout=2
+                hass, criteria, wait_for_upload=True, quiet_period=0.05, timeout=2
             ),
             0.5,
         )

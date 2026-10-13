@@ -6,7 +6,7 @@ The original author archived the project. This fork maintains compatibility with
 
 ## Installation
 
-Version 4.2.1 requires Home Assistant 2026.10.0 or newer (Python 3.14.2 or newer).
+Version 4.2.2 requires Home Assistant 2026.10.0 or newer (Python 3.14.2 or newer).
 
 1. Add this HACS custom repository and install the integration:
 
@@ -31,10 +31,12 @@ After setup, call the `fetch_latest_file.fetch` action with these parameters:
 - `min_size`: Nonnegative minimum size, such as `1024`, `1KB`, `1MB`, or `1.5M`. Defaults to `0B`. See **Minimum size** below. *(Optional)*
 - `wait_for_upload`: Wait for matching uploads to finish before publishing paths. Defaults to `false`. *(Optional)*
 - `timeout`: Maximum upload wait in positive seconds. Starts when the call begins processing after earlier calls for the same target finish. Defaults to `30`. *(Optional)*
+- `fresh_extensions`: A list of extensions requiring a recent upload while waiting. Entries ignore case, surrounding whitespace, and leading dots; normalized entries must be included in `extension`. Defaults to `[]`. Ignored when waiting is disabled. *(Optional)*
+- `freshness_window`: Positive finite seconds before action invocation allowed for fresh-extension modification times. Defaults to `5`. *(Optional)*
 - `quiet_period`: Positive seconds during which file identity, size, and modification time must remain unchanged without a writer-close notification. Defaults to `2`. *(Optional)*
 - `target_id`: Identifies a group of results. Use 1-64 letters, numbers, underscores, or hyphens. Calls with different IDs can run in parallel. Defaults to `default`. *(Optional)*
 
-All eight parameters appear in the visual action editor for automations and scripts and under **Developer tools → Actions**. Select **Fetch Latest File: Fetch latest file**. Enter the directory and filename prefix, then enable the optional fields you need.
+All ten parameters appear in the visual action editor for automations and scripts and under **Developer tools → Actions**. Select **Fetch Latest File: Fetch latest file**. Enter the directory and filename prefix, then enable the optional fields you need.
 
 Add each extension as a separate entry, such as `jpg` and `mp4`. Leave this field disabled or empty to search all extensions. Enter minimum size as text, such as `1M`. Use the toggle for upload waiting and enter timeout and quiet period in seconds.
 
@@ -111,18 +113,20 @@ With `wait_for_upload: false`, the action selects the newest file meeting the fi
 
 With `wait_for_upload: true`, the action watches for filesystem notifications before scanning. On local Linux storage, it uses inotify writer-close (`CLOSE_WRITE`) notifications. A close notification can make a file ready as soon as the action rechecks it.
 
-Files whose initial modification time is at least `quiet_period` old may return at once. Recent files and files with future modification times need a close notification or unchanged identity, size, and modification time for `quiet_period`.
+Waiting pins the newest matching file per extension, including files still below the minimum size. A pin identifies its path, device, and inode; later arrivals never replace it. Even older completed files require an observed quiet period unless a writer-close notification is received. The action rechecks identity and content metadata before publishing and rescans to recover missed notifications. Notification failures add `notifications_unavailable` and use stability checks within the original timeout.
 
-The action rechecks paths before publishing results. It also reconsiders files that arrive or change during the wait and rescans to recover missed notifications. If notifications fail or are unavailable, it logs a warning and adds `notifications_unavailable` to `FetchStatus`. It continues with heuristic checks within the original timeout.
+Use `fresh_extensions: [jpg]` alongside `extension: [jpg, mp4]` to require a recent image while allowing an existing video without a freshness cutoff. The action captures invocation time before queuing behind another call for the same target. The fixed cutoff is invocation time minus `freshness_window` (default five seconds); it never advances during the wait. On the initial scan, the newest eligible file is pinned, including an upload still in progress. If none exists, the first subsequently observed eligible candidate is pinned. When candidates first appear together, the earliest modification time wins, then the lexicographically smallest path. Previously excluded files may become eligible when uploaded or updated. Modification times describe filesystem writes, not camera capture relevance. An unfinished file last modified before the cutoff is excluded; increase the window if needed.
 
-The action waits for the newest qualifying candidate for each matched extension. An absent requested extension does not delay otherwise ready results. If no qualifying files exist, it waits for arrival until the deadline. At timeout, it selects the newest completed qualifying file per extension. If none is completed, it returns the newest qualifying file with completion marked unverified. `Overall` is the newest of the selected paths. Minimum-size and other search requirements are never relaxed.
+An event image may already be uploaded, still be uploading, or not have started uploading when the call arrives. A recent existing image is pinned and its completion is checked. An eligible partial image is pinned while it finishes. If no eligible image exists yet, the action waits for the next one instead of returning an older completed image. Old modification times alone never prove completion; readiness requires a writer-close notification or an observed quiet period.
+
+Every fresh extension must have a completed, size-qualified pin before a successful return. Ordinary missing extensions do not delay otherwise ready results. Pinned uploads below `min_size` remain pending while growing. At timeout, only the same pinned size-qualified files are returned, with incomplete completion marked unverified. Deleted or replaced pins and undersized pins produce no path; older completed files are never substituted. `Overall` is the newest of the selected paths. No-wait selection remains unchanged even when freshness parameters are supplied.
 
 Each call replaces `FetchStatus`. Its `status` is `ok`, `fallback`, `no_match`, or `error`. Its `reasons` maps affected result keys to lists of these codes:
 
 | Code | Meaning |
 | --- | --- |
 | `minimum_size` | A newer matching file was skipped because it was too small. |
-| `upload_timeout` | The upload deadline required a fallback selection. |
+| `upload_timeout` | The upload deadline expired before a pinned file was ready or a required fresh file was found. |
 | `completion_unverified` | The returned file may still be uploading. |
 | `no_matching_file` | No qualifying result exists for a requested extension. |
 | `scan_limit_reached` | A scan reached the configured file or directory limit; results may be incomplete. |
@@ -131,25 +135,25 @@ Each call replaces `FetchStatus`. Its `status` is `ok`, `fallback`, `no_match`, 
 | `invalid_search` | Directory or filename search validation failed. |
 | `os_error` | An operating-system error prevented the search. |
 
-Diagnostics also cover affected `Overall` selections. The action logs degraded outcomes as warnings. For example, a newer MP4 is still uploading at timeout, and an older completed MP4 is available:
+Diagnostics also cover affected `Overall` selections. The action logs degraded outcomes as warnings. For example, the pinned MP4 is still uploading at timeout:
 
 ```yaml
 default:
-  Overall: /ftproot/Reolink-older.mp4
-  mp4: /ftproot/Reolink-older.mp4
+  Overall: /ftproot/Reolink-pinned.mp4
+  mp4: /ftproot/Reolink-pinned.mp4
   timestamp: "2025-10-26T14:30:45-0700"
   FetchStatus:
     status: fallback
     reasons:
-      Overall: [upload_timeout]
-      mp4: [upload_timeout]
+      Overall: [upload_timeout, completion_unverified]
+      mp4: [upload_timeout, completion_unverified]
 ```
 
 Timeout fallback completes the call without an upload-timeout error so automations can continue. If no file qualifies, the result contains `status: "No matching files"` and `FetchStatus.status: no_match`, with no file path.
 
 Invalid minimum sizes and searches raise translated validation errors. Filesystem failures raise translated action errors. Before raising, the action removes stale paths for the target and sets `FetchStatus.status: error`. An unavailable integration also raises an action error.
 
-Upload detection works best on local Linux storage when the uploader closes its final file. Writer closure does not prove that the transfer succeeded. Both the initial file-age shortcut and the quiet-period check are heuristic: a paused upload can appear complete. The action cannot recover a close event from before it began watching.
+Upload detection works best on local Linux storage when the uploader closes its final file. Writer closure does not prove that the transfer succeeded. The quiet-period check is heuristic: a paused upload can appear complete. The action cannot recover a close event from before it began watching.
 
 An unverified timeout result lets automations continue but may point to an unfinished file. Check `FetchStatus` when completion matters.
 
@@ -276,6 +280,10 @@ Other upgrade notes:
 Update Home Assistant to 2026.10.0 or newer before installing 4.2.0. Upload waiting remains optional, and existing calls keep their defaults. You can adopt action responses without changing sensor templates. Review automations that depend on invalid-input calls continuing: these calls now raise translated errors. Timeouts and no-match outcomes still complete without raising.
 
 If you use unusual extensions, add the extra `ext_` prefix to keys for literal `no_extension` and every `ext_` prefix, as described above. Ordinary extensions such as `jpg` and `mp4` keep their keys.
+
+### Version 4.2.2 fixes
+
+Upload waiting now pins file identity, waits for observed completion, and never substitutes later arrivals or older completed files. Optional per-extension freshness uses a fixed configurable recency window to await an event image while allowing an existing video. No-wait behavior is unchanged.
 
 ### Version 4.2.1 fixes
 

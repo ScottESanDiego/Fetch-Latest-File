@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import math
 import re
+import time
 from datetime import datetime
 from typing import cast
 
@@ -90,14 +91,33 @@ def _positive_seconds(value: object) -> float:
     return seconds
 
 
+def _validate_fresh_extensions(data: dict) -> dict:
+    """Require fresh extensions to be part of an explicit extension filter."""
+    fresh = normalize_extensions(data.get("fresh_extensions", []))
+    requested = normalize_extensions(data.get("extension"))
+    if not fresh <= requested:
+        raise vol.Invalid("fresh_extensions must be included in extension")
+    data["fresh_extensions"] = sorted(fresh)
+    return data
+
+
+class _FetchSchema(vol.Schema):
+    """Keep service-field metadata available while checking cross-field input."""
+
+    def __call__(self, data):
+        return _validate_fresh_extensions(super().__call__(data))
+
+
 # Service schema for validation
-SERVICE_FETCH_SCHEMA = vol.Schema(
+SERVICE_FETCH_SCHEMA = _FetchSchema(
     {
         vol.Required("directory"): cv.string,
         vol.Required("filename"): cv.string,
         vol.Optional("extension"): vol.Any(cv.string, [cv.string]),
         vol.Optional("min_size", default="0B"): cv.string,
         vol.Optional("wait_for_upload", default=False): cv.boolean,
+        vol.Optional("fresh_extensions", default=[]): [cv.string],
+        vol.Optional("freshness_window", default=5): _positive_seconds,
         vol.Optional("timeout", default=30): _positive_seconds,
         vol.Optional("quiet_period", default=2): _positive_seconds,
         vol.Optional("target_id", default=DEFAULT_TARGET_ID): vol.All(
@@ -149,6 +169,7 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     """Register the persistent action without capturing a config entry."""
 
     async def handle_fetch(call: ServiceCall) -> ServiceResponse:
+        invocation_time_ns = time.time_ns()
         runtime: FetchLatestFileRuntimeData | None = hass.data.get(DOMAIN)
         if runtime is None or runtime.unloading:
             raise HomeAssistantError(
@@ -200,6 +221,9 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
                     wait_for_upload=call.data["wait_for_upload"],
                     timeout=call.data["timeout"],
                     quiet_period=call.data["quiet_period"],
+                    fresh_extensions=set(call.data["fresh_extensions"]),
+                    freshness_window=call.data["freshness_window"],
+                    invocation_time_ns=invocation_time_ns,
                 )
             except FileSearchError as err:
                 _publish_error(

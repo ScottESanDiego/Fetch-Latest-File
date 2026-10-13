@@ -37,6 +37,23 @@ fetch:
           step: any
           mode: box
           unit_of_measurement: s
+    fresh_extensions:
+      required: false
+      default: []
+      example: ["jpg"]
+      selector:
+        text:
+          multiple: true
+    freshness_window:
+      required: false
+      default: 5
+      example: 5
+      selector:
+        number:
+          min: 0.001
+          step: any
+          mode: box
+          unit_of_measurement: s
     quiet_period:
       required: false
       default: 2

@@ -25,6 +25,56 @@ _LOGGER = logging.getLogger(__name__)
 _newest = newest_files
 
 
+def _pin_candidates(
+    scan: ScanResult,
+    pins: dict[str, MatchedFile],
+    fresh_extensions: set[str],
+    cutoff_ns: int,
+    initial_scan: bool,
+) -> None:
+    """Choose each extension once; fresh partial uploads may grow after pinning."""
+    ordinary = _newest([*scan.files, *scan.undersized])
+    for key, match in ordinary.items():
+        if match.extension not in fresh_extensions:
+            pins.setdefault(key, match)
+    for extension in fresh_extensions:
+        key = result_key(extension)
+        if key in pins:
+            continue
+        candidates = [
+            match
+            for match in (*scan.files, *scan.undersized)
+            if match.extension == extension and match.mtime_ns >= cutoff_ns
+        ]
+        if candidates:
+            pins[key] = min(
+                candidates,
+                key=lambda match: (
+                    -match.mtime_ns if initial_scan else match.mtime_ns,
+                    match.path,
+                ),
+            )
+
+
+def _pinned_scan(scan: ScanResult, pins: dict[str, MatchedFile]) -> ScanResult:
+    """Keep only the original path/device/inode, with current content metadata."""
+
+    def pinned(match: MatchedFile) -> bool:
+        original = pins.get(result_key(match.extension))
+        return original is not None and (match.path, match.device, match.inode) == (
+            original.path,
+            original.device,
+            original.inode,
+        )
+
+    return ScanResult(
+        [match for match in scan.files if pinned(match)],
+        [match for match in scan.undersized if pinned(match)],
+        scan.directories,
+        scan.scan_limit_reached,
+    )
+
+
 def _status(
     scan: ScanResult,
     selected: dict[str, MatchedFile],
@@ -103,7 +153,6 @@ class _Watcher:
         self.stale: set[str] = set()
         self.failed = False
         self.discovery_requested = False
-        self.initial_scanned = False
         self.task: asyncio.Task[None] | None = None
 
     def start(self, criteria: SearchCriteria) -> None:
@@ -262,6 +311,9 @@ async def async_fetch_files(
     wait_for_upload: bool,
     timeout: float = 30,
     quiet_period: float = 2,
+    fresh_extensions: set[str] | None = None,
+    freshness_window: float = 5,
+    invocation_time_ns: int | None = None,
 ) -> tuple[list[MatchedFile], FetchStatus]:
     """Wait for uploads, returning marked size-qualified fallbacks at the deadline."""
     if not wait_for_upload:
@@ -271,13 +323,22 @@ async def async_fetch_files(
             scan, selected, criteria.extensions, False, set()
         )
 
+    fresh_extensions = fresh_extensions or set()
+    invocation_time_ns = (
+        time.time_ns() if invocation_time_ns is None else invocation_time_ns
+    )
+    window_numerator, window_denominator = float(freshness_window).as_integer_ratio()
+    cutoff_ns = invocation_time_ns - (
+        window_numerator * 1_000_000_000 // window_denominator
+    )
+    pins: dict[str, MatchedFile] = {}
+    initial_scan = True
     loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout
     wake = asyncio.Event()
     watcher = _Watcher(loop, wake)
     signatures: dict[str, tuple[tuple[int, int, int, int], float]] = {}
     closed: dict[str, tuple[int, int, int, int]] = {}
-    initial_old: dict[str, tuple[int, int, int, int]] = {}
     watching = False
     notifications_failed = False
     scan: ScanResult | None = None
@@ -313,6 +374,9 @@ async def async_fetch_files(
             else:
                 scan = await hass.async_add_executor_job(refresh_files, criteria, scan)
             watcher.check_consumer()
+            _pin_candidates(scan, pins, fresh_extensions, cutoff_ns, initial_scan)
+            initial_scan = False
+            candidates = _pinned_scan(scan, pins)
             now = loop.time()
             events, watcher.events = watcher.events, {}
             if watcher.failed:
@@ -320,24 +384,12 @@ async def async_fetch_files(
             if watcher.overflow or watcher.readiness_invalidated:
                 signatures.clear()
                 closed.clear()
-                initial_old.clear()
                 watcher.overflow = False
                 watcher.readiness_invalidated = False
-                watcher.initial_scanned = True
-            # Only the initial candidate scan may use the mtime-age heuristic.
-            if not watcher.initial_scanned:
-                watcher.initial_scanned = True
-                wall_now_ns = time.time_ns()
-                initial_old = {
-                    match.path: match.signature
-                    for match in scan.files
-                    if wall_now_ns - match.mtime_ns >= quiet_period * 1_000_000_000
-                }
             for path in events:
                 signatures.pop(path, None)
                 closed.pop(path, None)
-                initial_old.pop(path, None)
-            current_paths = {match.path for match in scan.files}
+            current_paths = {match.path for match in candidates.files}
             signatures = {
                 path: value
                 for path, value in signatures.items()
@@ -347,7 +399,7 @@ async def async_fetch_files(
                 path: value for path, value in closed.items() if path in current_paths
             }
             ready: set[str] = set()
-            for match in scan.files:
+            for match in candidates.files:
                 previous = signatures.get(match.path)
                 if previous is None or previous[0] != match.signature:
                     signatures[match.path] = (match.signature, now)
@@ -355,49 +407,58 @@ async def async_fetch_files(
                     closed[match.path] = match.signature
                 if (
                     closed.get(match.path) == match.signature
-                    or initial_old.get(match.path) == match.signature
                     or now - signatures[match.path][1] >= quiet_period
                 ):
                     ready.add(match.path)
-            newest = _newest(scan.files)
+            newest = _newest(candidates.files)
             timed_out = now >= deadline
             if timed_out or (
-                newest and all(match.path in ready for match in newest.values())
+                newest
+                and pins.keys() <= newest.keys()
+                and all(result_key(ext) in newest for ext in fresh_extensions)
+                and all(match.path in ready for match in newest.values())
             ):
                 final = await hass.async_add_executor_job(scan_files, criteria)
+                _pin_candidates(final, pins, fresh_extensions, cutoff_ns, False)
+                final_candidates = _pinned_scan(final, pins)
                 watcher.check_consumer()
-                old_signatures = {match.path: match.signature for match in scan.files}
+                old_signatures = {
+                    match.path: match.signature for match in candidates.files
+                }
                 ready = {
                     match.path
-                    for match in final.files
+                    for match in final_candidates.files
                     if match.path in ready
                     and old_signatures.get(match.path) == match.signature
                     and match.path not in watcher.events
                     and not watcher.overflow
                     and not watcher.readiness_invalidated
                 }
-                final_newest = _newest(final.files)
+                final_newest = _newest(final_candidates.files)
                 timed_out = loop.time() >= deadline
                 if timed_out or (
                     final_newest
+                    and pins.keys() <= final_newest.keys()
+                    and all(result_key(ext) in final_newest for ext in fresh_extensions)
                     and all(item.path in ready for item in final_newest.values())
                 ):
-                    selected = (
-                        _newest([match for match in final.files if match.path in ready])
-                        if timed_out
-                        else final_newest
-                    )
-                    if timed_out:
-                        for key, match in final_newest.items():
-                            selected.setdefault(key, match)
-                    return list(selected.values()), _status(
-                        final,
+                    selected = final_newest
+                    status = _status(
+                        final_candidates,
                         selected,
                         criteria.extensions,
                         timed_out,
                         ready,
                         notifications_failed or watcher.failed,
                     )
+                    if timed_out:
+                        for ext in fresh_extensions:
+                            key = result_key(ext)
+                            if key not in selected:
+                                status["reasons"].setdefault(key, []).append(
+                                    "upload_timeout"
+                                )
+                    return list(selected.values()), status
                 scan = final
             next_check = min(
                 (

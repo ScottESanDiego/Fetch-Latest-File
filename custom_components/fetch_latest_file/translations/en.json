@@ -62,15 +62,23 @@
         },
         "wait_for_upload": {
           "name": "Wait for upload",
-          "description": "Wait for writer-close notifications or heuristic file stability. Files already older than the quiet period may return immediately. Timeout fallback is indicated in FetchStatus. Defaults to false."
+          "description": "Pin one file per extension and wait for writer-close notifications or observed file stability. Later files never replace pinned uploads. Timeout completion is indicated in FetchStatus. Defaults to false."
         },
         "timeout": {
           "name": "Upload timeout",
-          "description": "Maximum upload wait in seconds, starting when this target begins processing. A timeout returns a qualifying fallback when available. Defaults to 30."
+          "description": "Maximum upload wait in seconds, starting when this target begins processing. At timeout, only the same pinned qualifying files may be returned. Defaults to 30."
         },
         "quiet_period": {
           "name": "Quiet period",
-          "description": "Seconds of unchanged file identity, size, and modification time needed for heuristic readiness. Initially older files may return immediately. A paused upload can appear complete. Defaults to 2."
+          "description": "Seconds of unchanged file identity, size, and modification time needed for heuristic readiness. A paused upload can appear complete. Defaults to 2."
+        },
+        "fresh_extensions": {
+          "name": "Fresh extensions",
+          "description": "A list of extensions requiring recent uploads when waiting. Entries ignore case, surrounding whitespace, and leading dots, and must be included in Extension after normalization. Initially selects the newest eligible file; otherwise waits for the next eligible file. Ignored when upload waiting is disabled. Defaults to an empty list."
+        },
+        "freshness_window": {
+          "name": "Freshness window",
+          "description": "Positive seconds before action invocation in which fresh-extension files may have been modified. The cutoff stays fixed while waiting, including queued calls. Uses filesystem modification time, not camera capture time. Defaults to 5."
         }
       }
     }
