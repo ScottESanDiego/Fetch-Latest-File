@@ -56,6 +56,7 @@ from .upload_wait import async_fetch_files
 _LOGGER = logging.getLogger(__name__)
 
 PLATFORMS = [Platform.SENSOR]
+CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 SERVICE_FETCH = "fetch"
 
 DEFAULT_TARGET_ID = "default"
