@@ -36,9 +36,11 @@ After setup, call the `fetch_latest_file.fetch` action with these parameters:
 - `quiet_period`: Positive seconds during which file identity, size, and modification time must remain unchanged without a writer-close notification. Defaults to `2`. *(Optional)*
 - `target_id`: Identifies a group of results. Use 1-64 letters, numbers, underscores, or hyphens. Calls with different IDs can run in parallel. Defaults to `default`. *(Optional)*
 
-All ten parameters appear in the visual action editor for automations and scripts and under **Developer tools → Actions**. Select **Fetch Latest File: Fetch latest file**. Enter the directory and filename prefix, then enable the optional fields you need.
+All ten parameters appear in the visual action editor for automations and scripts and under **Developer tools → Actions**. Select **Fetch Latest File: Fetch latest file**. Enter the directory and **Filename prefix**, then enable the optional fields you need. **Wait for upload** stays visible; expand the initially collapsed **Upload settings** section for timeout, quiet period, fresh extensions, and freshness window.
 
 Add each extension as a separate entry, such as `jpg` and `mp4`. Leave this field disabled or empty to search all extensions. Enter minimum size as text, such as `1M`. Use the toggle for upload waiting and enter timeout and quiet period in seconds.
+
+The four fields in **Upload settings** are ignored when **Wait for upload** is off. **Freshness window** only applies when **Fresh extensions** is nonempty. Sections only group controls visually: YAML and API action data still use the same flat parameter names, including `filename`.
 
 After installing an update to the service field definitions, restart Home Assistant and refresh the browser before reopening the action editor.
 

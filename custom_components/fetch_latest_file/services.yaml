@@ -27,43 +27,46 @@ fetch:
       default: false
       selector:
         boolean:
-    timeout:
-      required: false
-      default: 30
-      example: 30
-      selector:
-        number:
-          min: 0.001
-          step: any
-          mode: box
-          unit_of_measurement: s
-    fresh_extensions:
-      required: false
-      default: []
-      example: ["jpg"]
-      selector:
-        text:
-          multiple: true
-    freshness_window:
-      required: false
-      default: 5
-      example: 5
-      selector:
-        number:
-          min: 0.001
-          step: any
-          mode: box
-          unit_of_measurement: s
-    quiet_period:
-      required: false
-      default: 2
-      example: 2
-      selector:
-        number:
-          min: 0.001
-          step: any
-          mode: box
-          unit_of_measurement: s
+    upload_settings:
+      collapsed: true
+      fields:
+        timeout:
+          required: false
+          default: 30
+          example: 30
+          selector:
+            number:
+              min: 0.001
+              step: any
+              mode: box
+              unit_of_measurement: s
+        quiet_period:
+          required: false
+          default: 2
+          example: 2
+          selector:
+            number:
+              min: 0.001
+              step: any
+              mode: box
+              unit_of_measurement: s
+        fresh_extensions:
+          required: false
+          default: []
+          example: ["jpg"]
+          selector:
+            text:
+              multiple: true
+        freshness_window:
+          required: false
+          default: 5
+          example: 5
+          selector:
+            number:
+              min: 0.001
+              step: any
+              mode: box
+              unit_of_measurement: s
     target_id:
       example: "camera1"
       required: false

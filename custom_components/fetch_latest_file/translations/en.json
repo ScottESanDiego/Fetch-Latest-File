@@ -45,7 +45,7 @@
           "description": "The directory to search for files. The search is recursive and includes subdirectories."
         },
         "filename": {
-          "name": "File name prefix",
+          "name": "Filename prefix",
           "description": "The beginning of the filename of the file to fetch. Case-insensitive."
         },
         "extension": {
@@ -66,11 +66,11 @@
         },
         "timeout": {
           "name": "Upload timeout",
-          "description": "Maximum upload wait in seconds, starting when this target begins processing. At timeout, only the same pinned qualifying files may be returned. Defaults to 30."
+          "description": "Maximum upload wait in seconds, starting when this target begins processing. At timeout, only the same pinned qualifying files may be returned. Ignored when upload waiting is disabled. Defaults to 30."
         },
         "quiet_period": {
           "name": "Quiet period",
-          "description": "Seconds of unchanged file identity, size, and modification time needed for heuristic readiness. A paused upload can appear complete. Defaults to 2."
+          "description": "Seconds of unchanged file identity, size, and modification time needed for heuristic readiness. A paused upload can appear complete. Ignored when upload waiting is disabled. Defaults to 2."
         },
         "fresh_extensions": {
           "name": "Fresh extensions",
@@ -78,7 +78,12 @@
         },
         "freshness_window": {
           "name": "Freshness window",
-          "description": "Positive seconds before action invocation in which fresh-extension files may have been modified. The cutoff stays fixed while waiting, including queued calls. Uses filesystem modification time, not camera capture time. Defaults to 5."
+          "description": "Positive seconds before action invocation in which fresh-extension files may have been modified. The cutoff stays fixed while waiting, including queued calls. Uses filesystem modification time, not camera capture time. Only applies when upload waiting is enabled and Fresh extensions is nonempty. Defaults to 5."
+        }
+      },
+      "sections": {
+        "upload_settings": {
+          "name": "Upload settings"
         }
       }
     }
