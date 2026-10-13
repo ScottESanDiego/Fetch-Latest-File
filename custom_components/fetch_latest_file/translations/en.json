@@ -62,11 +62,11 @@
         },
         "wait_for_upload": {
           "name": "Wait for upload",
-          "description": "Pin one file per extension and wait for writer-close notifications or observed file stability. Later files never replace pinned uploads. Timeout completion is indicated in FetchStatus. Defaults to false."
+          "description": "Select and pin one file per extension, optionally by position in a fresh upload sequence. Wait for writer-close notifications or observed stability. Later files never replace pinned uploads. Timeout completion is indicated in FetchStatus. Defaults to false."
         },
         "timeout": {
           "name": "Upload timeout",
-          "description": "Maximum upload wait in seconds, starting when this target begins processing. At timeout, only the same pinned qualifying files may be returned. Ignored when upload waiting is disabled. Defaults to 30."
+          "description": "Maximum upload wait in seconds, starting when this target begins processing. At timeout, keep the same size-qualified pins. If the requested sequence position has not arrived, use its last size-qualified image. Ignored when upload waiting is disabled. Defaults to 30."
         },
         "quiet_period": {
           "name": "Quiet period",
@@ -74,11 +74,23 @@
         },
         "fresh_extensions": {
           "name": "Fresh extensions",
-          "description": "A list of extensions requiring recent uploads when waiting. Entries ignore case, surrounding whitespace, and leading dots, and must be included in Extension after normalization. Initially selects the newest eligible file; otherwise waits for the next eligible file. Ignored when upload waiting is disabled. Defaults to an empty list."
+          "description": "A list of extensions requiring recent uploads when waiting. Entries ignore case, surrounding whitespace, and leading dots, and must be included in Extension after normalization. Selects the newest eligible file or waits for the next; with Burst position, selects from the latest qualifying sequence. Ignored when upload waiting is disabled. Defaults to an empty list."
         },
         "freshness_window": {
           "name": "Freshness window",
-          "description": "Positive seconds before action invocation in which fresh-extension files may have been modified. The cutoff stays fixed while waiting, including queued calls. Uses filesystem modification time, not camera capture time. Only applies when upload waiting is enabled and Fresh extensions is nonempty. Defaults to 5."
+          "description": "Positive seconds before invocation allowed for recent filesystem updates. With Burst position, freshness checks the sequence's newest image, so the selected image may be older. Otherwise checks individual files. The cutoff stays fixed. Applies only when waiting with Fresh extensions. Defaults to 5."
+        },
+        "burst_position": {
+          "name": "Burst position",
+          "description": "Select this position in the latest qualifying upload sequence for each Fresh extension. Use 1, 2, 3, or any positive whole number. Requires Fresh extensions; applies only when waiting. If the position never arrives, use the last size-qualified file from that sequence. Omit to retain ordinary fresh-file selection."
+        },
+        "burst_gap": {
+          "name": "Burst gap",
+          "description": "Positive seconds separating sequences by filesystem timestamps when files are first observed. Later writes reset the idle timer without bridging sequence gaps. A gap of at least this duration starts a new sequence; this much inactivity closes it. Applies only with Burst position while waiting. Defaults to 5."
+        },
+        "lookback_window": {
+          "name": "Lookback window",
+          "description": "Positive seconds of history before invocation searched for a sequence start. This boundary stays fixed. If the sequence start is outside this window or obscured by scan limits, return no file for that extension. Applies only with Burst position while waiting. Defaults to 60."
         }
       },
       "sections": {

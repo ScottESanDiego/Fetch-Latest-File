@@ -9,6 +9,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from .burst import BurstTracker, seconds_ns
 from .scanner import (
     MatchedFile,
     ScanResult,
@@ -31,12 +32,16 @@ def _pin_candidates(
     fresh_extensions: set[str],
     cutoff_ns: int,
     initial_scan: bool,
+    *,
+    select_fresh: bool = True,
 ) -> None:
     """Choose each extension once; fresh partial uploads may grow after pinning."""
     ordinary = _newest([*scan.files, *scan.undersized])
     for key, match in ordinary.items():
         if match.extension not in fresh_extensions:
             pins.setdefault(key, match)
+    if not select_fresh:
+        return
     for extension in fresh_extensions:
         key = result_key(extension)
         if key in pins:
@@ -314,6 +319,9 @@ async def async_fetch_files(
     fresh_extensions: set[str] | None = None,
     freshness_window: float = 5,
     invocation_time_ns: int | None = None,
+    burst_position: int | None = None,
+    burst_gap: float = 5,
+    lookback_window: float = 60,
 ) -> tuple[list[MatchedFile], FetchStatus]:
     """Wait for uploads, returning marked size-qualified fallbacks at the deadline."""
     if not wait_for_upload:
@@ -327,9 +335,20 @@ async def async_fetch_files(
     invocation_time_ns = (
         time.time_ns() if invocation_time_ns is None else invocation_time_ns
     )
-    window_numerator, window_denominator = float(freshness_window).as_integer_ratio()
-    cutoff_ns = invocation_time_ns - (
-        window_numerator * 1_000_000_000 // window_denominator
+    cutoff_ns = invocation_time_ns - seconds_ns(freshness_window)
+    bursts = (
+        {
+            extension: BurstTracker(
+                extension,
+                burst_position,
+                burst_gap,
+                invocation_time_ns - seconds_ns(lookback_window),
+                cutoff_ns,
+            )
+            for extension in fresh_extensions
+        }
+        if burst_position is not None
+        else {}
     )
     pins: dict[str, MatchedFile] = {}
     initial_scan = True
@@ -343,6 +362,51 @@ async def async_fetch_files(
     notifications_failed = False
     scan: ScanResult | None = None
     next_discovery = 0.0
+
+    def select_candidates(
+        current: ScanResult, first: bool, *, commit_fallback: bool = False
+    ) -> None:
+        _pin_candidates(
+            current,
+            pins,
+            fresh_extensions,
+            cutoff_ns,
+            first,
+            select_fresh=not bursts,
+        )
+        for extension, burst in bursts.items():
+            key = result_key(extension)
+            if key not in pins:
+                candidate = burst.select(
+                    current,
+                    now=loop.time(),
+                    wall_now_ns=time.time_ns(),
+                    timed_out=loop.time() >= deadline,
+                )
+                if candidate is not None and (
+                    not burst.position_unavailable or commit_fallback
+                ):
+                    pins[key] = candidate
+
+    def tracked_files(current: ScanResult, candidates: ScanResult) -> list[MatchedFile]:
+        tracked = {match.path: match for match in candidates.files}
+        for extension, burst in bursts.items():
+            if result_key(extension) not in pins:
+                tracked.update(
+                    {match.path: match for match in burst.qualifying_members(current)}
+                )
+        return list(tracked.values())
+
+    def can_finish(selected: dict[str, MatchedFile], ready: set[str]) -> bool:
+        blocked = {ext for ext, burst in bursts.items() if burst.boundary_unknown}
+        required = fresh_extensions - blocked
+        return (
+            (bool(selected) or bool(blocked) and not required)
+            and pins.keys() <= selected.keys()
+            and all(result_key(ext) in selected for ext in required)
+            and all(match.path in ready for match in selected.values())
+        )
+
     try:
         try:
             await _finish_executor(hass, watcher.start, criteria)
@@ -374,9 +438,10 @@ async def async_fetch_files(
             else:
                 scan = await hass.async_add_executor_job(refresh_files, criteria, scan)
             watcher.check_consumer()
-            _pin_candidates(scan, pins, fresh_extensions, cutoff_ns, initial_scan)
+            select_candidates(scan, initial_scan)
             initial_scan = False
             candidates = _pinned_scan(scan, pins)
+            observed_files = tracked_files(scan, candidates)
             now = loop.time()
             events, watcher.events = watcher.events, {}
             if watcher.failed:
@@ -389,7 +454,7 @@ async def async_fetch_files(
             for path in events:
                 signatures.pop(path, None)
                 closed.pop(path, None)
-            current_paths = {match.path for match in candidates.files}
+            current_paths = {match.path for match in observed_files}
             signatures = {
                 path: value
                 for path, value in signatures.items()
@@ -399,7 +464,7 @@ async def async_fetch_files(
                 path: value for path, value in closed.items() if path in current_paths
             }
             ready: set[str] = set()
-            for match in candidates.files:
+            for match in observed_files:
                 previous = signatures.get(match.path)
                 if previous is None or previous[0] != match.signature:
                     signatures[match.path] = (match.signature, now)
@@ -412,18 +477,17 @@ async def async_fetch_files(
                     ready.add(match.path)
             newest = _newest(candidates.files)
             timed_out = now >= deadline
-            if timed_out or (
-                newest
-                and pins.keys() <= newest.keys()
-                and all(result_key(ext) in newest for ext in fresh_extensions)
-                and all(match.path in ready for match in newest.values())
-            ):
+            provisional_fallback = any(
+                burst.position_unavailable and result_key(extension) not in pins
+                for extension, burst in bursts.items()
+            )
+            if timed_out or can_finish(newest, ready) or provisional_fallback:
                 final = await hass.async_add_executor_job(scan_files, criteria)
-                _pin_candidates(final, pins, fresh_extensions, cutoff_ns, False)
+                select_candidates(final, False, commit_fallback=True)
                 final_candidates = _pinned_scan(final, pins)
                 watcher.check_consumer()
                 old_signatures = {
-                    match.path: match.signature for match in candidates.files
+                    match.path: match.signature for match in observed_files
                 }
                 ready = {
                     match.path
@@ -436,12 +500,7 @@ async def async_fetch_files(
                 }
                 final_newest = _newest(final_candidates.files)
                 timed_out = loop.time() >= deadline
-                if timed_out or (
-                    final_newest
-                    and pins.keys() <= final_newest.keys()
-                    and all(result_key(ext) in final_newest for ext in fresh_extensions)
-                    and all(item.path in ready for item in final_newest.values())
-                ):
+                if timed_out or can_finish(final_newest, ready):
                     selected = final_newest
                     status = _status(
                         final_candidates,
@@ -458,11 +517,46 @@ async def async_fetch_files(
                                 status["reasons"].setdefault(key, []).append(
                                     "upload_timeout"
                                 )
+                    for extension, burst in bursts.items():
+                        key = result_key(extension)
+                        code: ReasonCode | None = (
+                            "burst_boundary_unknown"
+                            if burst.boundary_unknown
+                            else "burst_position_unavailable"
+                            if burst.position_unavailable
+                            else None
+                        )
+                        if code is None:
+                            continue
+                        affected = [key]
+                        if (
+                            selected
+                            and max(
+                                selected.values(), key=lambda item: item.modified
+                            ).extension
+                            == extension
+                        ):
+                            affected.append("Overall")
+                        for affected_key in affected:
+                            reasons = status["reasons"].setdefault(affected_key, [])
+                            if code not in reasons:
+                                reasons.append(code)
+                            if (
+                                timed_out
+                                and burst.position_unavailable
+                                and "upload_timeout" not in reasons
+                            ):
+                                reasons.append("upload_timeout")
+                    if selected and status["reasons"]:
+                        status["status"] = "fallback"
                     return list(selected.values()), status
                 scan = final
+                newest = final_newest
             next_check = min(
                 (
                     signatures[match.path][1] + quiet_period
+                    if match.path in signatures
+                    else now
                     for match in newest.values()
                     if match.path not in ready
                 ),

@@ -11,5 +11,5 @@
     "asyncinotify>=4.4.4"
   ],
   "single_config_entry": true,
-  "version": "4.2.2"
+  "version": "4.3.0"
 }

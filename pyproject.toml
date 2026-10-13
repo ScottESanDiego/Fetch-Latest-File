@@ -1,6 +1,6 @@
 [project]
 name = "fetch-latest-file"
-version = "4.2.2"
+version = "4.3.0"
 description = "Fetch the latest matching files for Home Assistant"
 requires-python = ">=3.14.2"
 dependencies = ["asyncinotify==4.4.4"]

@@ -6,7 +6,7 @@ The original author archived the project. This fork maintains compatibility with
 
 ## Installation
 
-Version 4.2.2 requires Home Assistant 2026.10.0 or newer (Python 3.14.2 or newer).
+Version 4.3.0 requires Home Assistant 2026.10.0 or newer (Python 3.14.2 or newer).
 
 1. Add this HACS custom repository and install the integration:
 
@@ -32,15 +32,18 @@ After setup, call the `fetch_latest_file.fetch` action with these parameters:
 - `wait_for_upload`: Wait for matching uploads to finish before publishing paths. Defaults to `false`. *(Optional)*
 - `timeout`: Maximum upload wait in positive seconds. Starts when the call begins processing after earlier calls for the same target finish. Defaults to `30`. *(Optional)*
 - `fresh_extensions`: A list of extensions requiring a recent upload while waiting. Entries ignore case, surrounding whitespace, and leading dots; normalized entries must be included in `extension`. Defaults to `[]`. Ignored when waiting is disabled. *(Optional)*
-- `freshness_window`: Positive finite seconds before action invocation allowed for fresh-extension modification times. Defaults to `5`. *(Optional)*
+- `freshness_window`: Positive finite seconds before invocation allowed for recent filesystem updates. With `burst_position`, checks the latest sequence's tail; otherwise checks individual files. Defaults to `5`. *(Optional)*
+- `burst_position`: Select position 1, 2, 3, or any positive whole number in the latest qualifying upload sequence. Requires nonempty `fresh_extensions`. Omit to retain ordinary fresh-file selection. Applies only when waiting. *(Optional)*
+- `burst_gap`: Positive finite seconds separating upload sequences and closing idle sequences. A gap of at least this duration starts a new sequence. Defaults to `5`; applies only with `burst_position` while waiting. *(Optional)*
+- `lookback_window`: Positive finite seconds of history before invocation used to find a sequence start. Defaults to `60`; applies only with `burst_position` while waiting. *(Optional)*
 - `quiet_period`: Positive seconds during which file identity, size, and modification time must remain unchanged without a writer-close notification. Defaults to `2`. *(Optional)*
 - `target_id`: Identifies a group of results. Use 1-64 letters, numbers, underscores, or hyphens. Calls with different IDs can run in parallel. Defaults to `default`. *(Optional)*
 
-All ten parameters appear in the visual action editor for automations and scripts and under **Developer tools → Actions**. Select **Fetch Latest File: Fetch latest file**. Enter the directory and **Filename prefix**, then enable the optional fields you need. **Wait for upload** stays visible; expand the initially collapsed **Upload settings** section for timeout, quiet period, fresh extensions, and freshness window.
+All thirteen parameters appear in the visual action editor for automations and scripts and under **Developer tools → Actions**. Select **Fetch Latest File: Fetch latest file**. Enter the directory and **Filename prefix**, then enable the optional fields you need. **Wait for upload** stays visible; expand the initially collapsed **Upload settings** section for completion, freshness, and sequence controls.
 
 Add each extension as a separate entry, such as `jpg` and `mp4`. Leave this field disabled or empty to search all extensions. Enter minimum size as text, such as `1M`. Use the toggle for upload waiting and enter timeout and quiet period in seconds.
 
-The four fields in **Upload settings** are ignored when **Wait for upload** is off. **Freshness window** only applies when **Fresh extensions** is nonempty. Sections only group controls visually: YAML and API action data still use the same flat parameter names, including `filename`.
+The seven fields in **Upload settings** do not affect selection when **Wait for upload** is off; supplied values still undergo validation. **Freshness window** only applies when **Fresh extensions** is nonempty. Sequence controls only apply when **Burst position** is supplied. Sections only group controls visually: YAML and API action data still use flat parameter names, including `filename`.
 
 After installing an update to the service field definitions, restart Home Assistant and refresh the browser before reopening the action editor.
 
@@ -115,13 +118,39 @@ With `wait_for_upload: false`, the action selects the newest file meeting the fi
 
 With `wait_for_upload: true`, the action watches for filesystem notifications before scanning. On local Linux storage, it uses inotify writer-close (`CLOSE_WRITE`) notifications. A close notification can make a file ready as soon as the action rechecks it.
 
-Waiting pins the newest matching file per extension, including files still below the minimum size. A pin identifies its path, device, and inode; later arrivals never replace it. Even older completed files require an observed quiet period unless a writer-close notification is received. The action rechecks identity and content metadata before publishing and rescans to recover missed notifications. Notification failures add `notifications_unavailable` and use stability checks within the original timeout.
+Ordinary upload waiting pins the newest matching file per extension, including files still below the minimum size. Sequence selection, described below, changes this choice only for `fresh_extensions`. A pin identifies its path, device, and inode; later arrivals never replace it. Even older completed files require an observed quiet period unless a writer-close notification is received. The action rechecks identity and content metadata before publishing and rescans to recover missed notifications. Notification failures add `notifications_unavailable` and use stability checks within the original timeout.
 
-Use `fresh_extensions: [jpg]` alongside `extension: [jpg, mp4]` to require a recent image while allowing an existing video without a freshness cutoff. The action captures invocation time before queuing behind another call for the same target. The fixed cutoff is invocation time minus `freshness_window` (default five seconds); it never advances during the wait. On the initial scan, the newest eligible file is pinned, including an upload still in progress. If none exists, the first subsequently observed eligible candidate is pinned. When candidates first appear together, the earliest modification time wins, then the lexicographically smallest path. Previously excluded files may become eligible when uploaded or updated. Modification times describe filesystem writes, not camera capture relevance. An unfinished file last modified before the cutoff is excluded; increase the window if needed.
+Use `fresh_extensions: [jpg]` alongside `extension: [jpg, mp4]` to require a recent image while allowing an existing video without a freshness cutoff. The action captures invocation time before queuing behind another call for the same target. The fixed cutoff is invocation time minus `freshness_window` (default five seconds); it never advances during the wait. Without `burst_position`, the initial scan pins the newest eligible file, including an upload still in progress. If none exists, the first subsequently observed eligible candidate is pinned. When candidates first appear together, the earliest modification time wins, then the lexicographically smallest path. Previously excluded files may become eligible when uploaded or updated. Modification times describe filesystem writes, not camera capture relevance. An unfinished file last modified before the cutoff is excluded in ordinary mode; increase the window if needed.
 
 An event image may already be uploaded, still be uploading, or not have started uploading when the call arrives. A recent existing image is pinned and its completion is checked. An eligible partial image is pinned while it finishes. If no eligible image exists yet, the action waits for the next one instead of returning an older completed image. Old modification times alone never prove completion; readiness requires a writer-close notification or an observed quiet period.
 
-Every fresh extension must have a completed, size-qualified pin before a successful return. Ordinary missing extensions do not delay otherwise ready results. Pinned uploads below `min_size` remain pending while growing. At timeout, only the same pinned size-qualified files are returned, with incomplete completion marked unverified. Deleted or replaced pins and undersized pins produce no path; older completed files are never substituted. `Overall` is the newest of the selected paths. No-wait selection remains unchanged even when freshness parameters are supplied.
+Every fresh extension must have a completed, size-qualified pin before a successful return. Ordinary missing extensions do not delay otherwise ready results. Pinned uploads below `min_size` remain pending while growing. At timeout, only the same pinned size-qualified files are returned, with incomplete completion marked unverified. The sequence fallback below applies only if the requested position has not been pinned. Deleted or replaced pins and undersized pins produce no path; older completed files are never substituted. `Overall` is the newest of the selected paths. No-wait selection remains unchanged even when freshness or sequence parameters are supplied.
+
+### Select an image from an upload sequence
+
+Supply `burst_position` to select an earlier image from the latest qualifying sequence rather than its newest image. For example:
+
+```yaml
+action: fetch_latest_file.fetch
+data:
+  directory: "/ftproot"
+  filename: "Reolink-"
+  extension: ["jpg", "mp4"]
+  wait_for_upload: true
+  fresh_extensions: ["jpg"]
+  freshness_window: 5
+  burst_position: 2
+  burst_gap: 5
+  lookback_window: 60
+```
+
+This chooses the second JPG while selecting MP4 independently. All extensions remain configurable; sequence selection applies only to `fresh_extensions` while waiting. Omitting `burst_position` preserves ordinary selection, and disabling waiting preserves immediate selection.
+
+Sequences group filesystem upload/update times, not camera filenames or true camera recording events. Order images by modification time when first observed, then path. A gap of **at least five seconds** with the default `burst_gap` starts a new sequence. Partial uploads count as positions. Later writes update completion checks and the idle timer, but cannot change a file's position or bridge a gap to a later sequence. The latest sequence qualifies when its newest upload falls within the fixed freshness cutoff. Its selected first or second image may be older than five seconds.
+
+The default lookback searches sixty seconds before invocation. Both cutoffs stay fixed during waiting, including queued calls. If the sequence start crosses that history boundary or a scan limit prevents establishing it, return no image and report `burst_boundary_unknown` rather than guessing a position.
+
+Once the requested position exists, pin its path, device, and inode and wait for writer-close or observed stability. A deleted or replaced pin never triggers reselection. If that position has not arrived when the sequence is idle for `burst_gap` seconds, or the upload deadline expires, use the last size-qualified image from the same sequence. Report `burst_position_unavailable`; add `upload_timeout` only when the deadline actually expires. An unfinished returned image also carries `completion_unverified`. Never substitute an image from another sequence.
 
 Each call replaces `FetchStatus`. Its `status` is `ok`, `fallback`, `no_match`, or `error`. Its `reasons` maps affected result keys to lists of these codes:
 
@@ -130,6 +159,8 @@ Each call replaces `FetchStatus`. Its `status` is `ok`, `fallback`, `no_match`, 
 | `minimum_size` | A newer matching file was skipped because it was too small. |
 | `upload_timeout` | The upload deadline expired before a pinned file was ready or a required fresh file was found. |
 | `completion_unverified` | The returned file may still be uploading. |
+| `burst_boundary_unknown` | The latest sequence's start cannot be established within the lookback window or scan limits; no file is selected for that extension. |
+| `burst_position_unavailable` | The requested position did not arrive; the last size-qualified file from the same sequence is used if available. |
 | `no_matching_file` | No qualifying result exists for a requested extension. |
 | `scan_limit_reached` | A scan reached the configured file or directory limit; results may be incomplete. |
 | `notifications_unavailable` | Notifications failed or were unavailable; heuristic checks were used. |
@@ -282,6 +313,10 @@ Other upgrade notes:
 Update Home Assistant to 2026.10.0 or newer before installing 4.2.0. Upload waiting remains optional, and existing calls keep their defaults. You can adopt action responses without changing sensor templates. Review automations that depend on invalid-input calls continuing: these calls now raise translated errors. Timeouts and no-match outcomes still complete without raising.
 
 If you use unusual extensions, add the extra `ext_` prefix to keys for literal `no_extension` and every `ext_` prefix, as described above. Ordinary extensions such as `jpg` and `mp4` keep their keys.
+
+### Version 4.3.0
+
+Optional upload-sequence selection chooses any positive image position while preserving independently selected video paths. The Reolink blueprint exposes **Image Position** in **Upload Tuning**, defaulting to the first image. Sequence detection uses filesystem update times with configurable gap and lookback windows. Existing service calls that omit `burst_position` keep their previous selection behavior.
 
 ### Version 4.2.2 fixes
 

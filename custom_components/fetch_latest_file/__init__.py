@@ -92,12 +92,31 @@ def _positive_seconds(value: object) -> float:
     return seconds
 
 
+def _burst_position(value: object) -> int:
+    """Accept whole positive positions without truncating numbers or limiting N."""
+    if isinstance(value, bool):
+        raise vol.Invalid("Burst position must be a whole integer of at least 1")
+    if isinstance(value, int):
+        position = value
+    elif isinstance(value, float) and math.isfinite(value) and value.is_integer():
+        position = int(value)
+    elif isinstance(value, str) and re.fullmatch(r"\+?[0-9]+", value.strip()):
+        position = int(value)
+    else:
+        raise vol.Invalid("Burst position must be a whole integer of at least 1")
+    if position < 1:
+        raise vol.Invalid("Burst position must be a whole integer of at least 1")
+    return position
+
+
 def _validate_fresh_extensions(data: dict) -> dict:
     """Require fresh extensions to be part of an explicit extension filter."""
     fresh = normalize_extensions(data.get("fresh_extensions", []))
     requested = normalize_extensions(data.get("extension"))
     if not fresh <= requested:
         raise vol.Invalid("fresh_extensions must be included in extension")
+    if "burst_position" in data and not fresh:
+        raise vol.Invalid("burst_position requires nonempty fresh_extensions")
     data["fresh_extensions"] = sorted(fresh)
     return data
 
@@ -119,6 +138,9 @@ SERVICE_FETCH_SCHEMA = _FetchSchema(
         vol.Optional("wait_for_upload", default=False): cv.boolean,
         vol.Optional("fresh_extensions", default=[]): [cv.string],
         vol.Optional("freshness_window", default=5): _positive_seconds,
+        vol.Optional("burst_position"): _burst_position,
+        vol.Optional("burst_gap", default=5): _positive_seconds,
+        vol.Optional("lookback_window", default=60): _positive_seconds,
         vol.Optional("timeout", default=30): _positive_seconds,
         vol.Optional("quiet_period", default=2): _positive_seconds,
         vol.Optional("target_id", default=DEFAULT_TARGET_ID): vol.All(
@@ -225,6 +247,9 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
                     fresh_extensions=set(call.data["fresh_extensions"]),
                     freshness_window=call.data["freshness_window"],
                     invocation_time_ns=invocation_time_ns,
+                    burst_position=call.data.get("burst_position"),
+                    burst_gap=call.data["burst_gap"],
+                    lookback_window=call.data["lookback_window"],
                 )
             except FileSearchError as err:
                 _publish_error(

@@ -67,6 +67,34 @@ fetch:
               step: any
               mode: box
               unit_of_measurement: s
+        burst_position:
+          required: false
+          example: 2
+          selector:
+            number:
+              min: 1
+              step: 1
+              mode: box
+        burst_gap:
+          required: false
+          default: 5
+          example: 5
+          selector:
+            number:
+              min: 0.001
+              step: any
+              mode: box
+              unit_of_measurement: s
+        lookback_window:
+          required: false
+          default: 60
+          example: 60
+          selector:
+            number:
+              min: 0.001
+              step: any
+              mode: box
+              unit_of_measurement: s
     target_id:
       example: "camera1"
       required: false

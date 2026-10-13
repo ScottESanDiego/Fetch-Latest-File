@@ -227,6 +227,9 @@ async def test_schema_defaults_and_positive_durations():
     assert normalized["quiet_period"] == 2
     assert normalized["fresh_extensions"] == []
     assert normalized["freshness_window"] == 5
+    assert "burst_position" not in normalized
+    assert normalized["burst_gap"] == 5
+    assert normalized["lookback_window"] == 60
     for field in ["MinSize", "minsize", "timeout", "quiet_period"]:
         for value in (
             ["1M"]
@@ -279,6 +282,32 @@ async def test_service_passes_normalized_fresh_extensions_and_default_window(
     assert passed["fresh_extensions"] == {"jpg"}
     assert passed["freshness_window"] == 5
     assert passed["wait_for_upload"] is True
+
+
+async def test_service_passes_burst_position_and_windows_without_hard_limit(
+    hass, entry, tmp_path
+):
+    received = []
+
+    async def fetch(hass, criteria, **kwargs):
+        received.append(kwargs)
+        return [MatchedFile(1, "/upload.webp", "webp")], {"status": "ok", "reasons": {}}
+
+    with patch.object(integration, "async_fetch_files", fetch):
+        await call(
+            hass,
+            tmp_path,
+            extension=["webp"],
+            fresh_extensions=["webp"],
+            burst_position=9.0,
+            burst_gap=6,
+            lookback_window=90,
+            wait_for_upload=True,
+        )
+    [passed] = received
+    assert passed["burst_position"] == 9
+    assert passed["burst_gap"] == 6
+    assert passed["lookback_window"] == 90
 
 
 async def test_user_and_options_flows_reload(hass):

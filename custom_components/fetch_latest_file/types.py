@@ -12,6 +12,8 @@ type ReasonCode = Literal[
     "no_matching_file",
     "scan_limit_reached",
     "notifications_unavailable",
+    "burst_boundary_unknown",
+    "burst_position_unavailable",
     "invalid_size",
     "invalid_search",
     "os_error",
